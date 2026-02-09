@@ -4,3 +4,12 @@
 .httr-oauth
 .DS_Store
 .quarto
+
+# subfolders and files in /data directory
+data/*
+
+# /text directory
+text/
+
+# /documentation directory
+documentation/
