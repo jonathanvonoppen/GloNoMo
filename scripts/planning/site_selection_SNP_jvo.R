@@ -132,10 +132,19 @@ plot_elevs <- readxl::read_excel(file.path(miren_planning_dir, "Site_setup.xlsx"
 # [2] Derive potential sampling zones/sites ----
 
 getMIRENsites <- function(target_road  # road/trail
-                          , plot_dimensions
-                          , buffer_width  # width of buffer zone
+                          , plot_width
+                          , plot_length  # width of buffer zone
+                          , resolution  # resolution along road in m
+                          , site_elev_dist_threshold  # set elevation distance threshold for sites
 ){
   target_road <- "flüela" # test
+  plot_width <- 2
+  plot_length <- 105
+  resolution <- 1
+  site_elev_dist_threshold <- 5
+  
+  target_road <- tolower(target_road)
+  
   
   ## > Determine target zones ----
   # load geometry
@@ -143,7 +152,7 @@ getMIRENsites <- function(target_road  # road/trail
   
   # add buffer to geometry
   road_geom_buffer <- road_geom %>% 
-    sf::st_buffer(dist = 105
+    sf::st_buffer(dist = plot_length
                   , endCapStyle = "ROUND")
   
   ## > Load DEM ----
@@ -166,8 +175,6 @@ getMIRENsites <- function(target_road  # road/trail
 
   
   ## > Limit road vector to ideal site elevation ----
-  # set elevation distance threshold for sites
-  site_elev_dist_threshold <- 5
   
   site_elev <- readxl::read_excel(file.path(miren_planning_dir, "Site_setup.xlsx")) %>% 
     dplyr::rename(plot_id = 1) %>% 
@@ -191,7 +198,7 @@ getMIRENsites <- function(target_road  # road/trail
   
   # create high-res segmentised version of road line
   road_geom_highres <- road_geom %>% 
-    sf::st_segmentize(dfMaxLength = 1)
+    sf::st_segmentize(dfMaxLength = resolution)
   
   # get road as vertices
   road_vertices <- road_geom_highres %>% 
@@ -209,11 +216,15 @@ getMIRENsites <- function(target_road  # road/trail
     dplyr::filter(
       purrr::map_lgl(elevation_m, ~ any(
         .x >= site_elev$elevation_m - site_elev_dist_threshold & 
-          .x <= site_elev$elevation_m + site_elev_dist_threshold
+        .x <= site_elev$elevation_m + site_elev_dist_threshold
       ))
     ) %>% 
-    dplyr::mutate(id = 1:nrow(.))
-  
+    # add unique ID column
+    dplyr::mutate(id = 1:nrow(.)) %>% 
+    # add Plot ID from site_elev
+    dplyr::mutate(plot_id = paste0("Plot ", findInterval(elevation_m
+                                                         , site_elev$elev_threshold_low
+                                                         , rightmost.closed = TRUE)))
   
   ## > Create perpendicular lines at vertices ----
   create_perpendicular_plots <- function(line_geom, point_geom, length, width) {
