@@ -126,6 +126,10 @@ plot_elevs <- readxl::read_excel(file.path(miren_planning_dir, "Site_setup.xlsx"
   tidyr::pivot_longer(cols = -plot_id
                       , names_to = "road"
                       , values_to = "elevation") %>% 
+  dplyr::mutate(road = dplyr::recode_values(road,
+                                            "Ofenpass" ~ "ofenpass",
+                                            "Stilfserjoch" ~ "umbrail",
+                                            "Flüelapass" ~ "flüela")) %>% 
   dplyr::arrange(road)
 
 
@@ -205,7 +209,7 @@ getMIRENsites <- function(target_road  # road/trail
     sf::st_cast("POINT")
   
   # get elevation along road
-  road_elev <- road_dem_masked %>% 
+  road_elev <- road_dem %>% 
     terra::extract(road_vertices, ID = FALSE)
   
   # add as road_geom attribute  
@@ -259,6 +263,7 @@ getMIRENsites <- function(target_road  # road/trail
     perp_dx <- -dy
     perp_dy <- dx
     
+    # offset
     # Create LEFT perpendicular line (one direction only)
     left_end <- c(point_coord[1] + perp_dx * length, 
                   point_coord[2] + perp_dy * length)
@@ -285,20 +290,24 @@ getMIRENsites <- function(target_road  # road/trail
   })
   
   # Create separate sf objects for left and right
-  perp_left_sf <- sf::st_sf(
+  perp_plots_left_sf <- sf::st_sf(
     id = road_vertices_zones_strict$id,
+    elevation_m = road_vertices_zones_strict$elevation_m,
+    plot_id = road_vertices_zones_strict$plot_id,
     side = "left",
     geometry = sf::st_sfc(purrr::map(perpendicular_plots_lr, "left"), crs = sf::st_crs(road_geom_highres))
   )
   
-  perp_right_sf <- sf::st_sf(
+  perp_plots_right_sf <- sf::st_sf(
     id = road_vertices_zones_strict$id,
+    elevation_m = road_vertices_zones_strict$elevation_m,
+    plot_id = road_vertices_zones_strict$plot_id,
     side = "right",
     geometry = sf::st_sfc(purrr::map(perpendicular_plots_lr, "right"), crs = sf::st_crs(road_geom_highres))
   )
   
   # Or combine into one sf object with a side column
-  perp_both_sf <- bind_rows(perp_left_sf, perp_right_sf)
+  perp_plots_bothsides_sf <- bind_rows(perp_plots_left_sf, perp_plots_right_sf)
   
   
   ## > Mask DEM (slope, road) ----
@@ -325,9 +334,93 @@ getMIRENsites <- function(target_road  # road/trail
   
   ## > Filter vertices ----
   
+  filter_perpendicular_plots <- function(plots_sf,
+                                         checkTerrain = TRUE,
+                                         terrain_rast,
+                                         checkRoad = TRUE,
+                                         road_geom){
+    
+    if(checkTerrain){
+      # print message
+      cat("Filtering based on terrain mask ...\n")
+      
+      check_NAs_polygon <- function(polygon,
+                                    rast,
+                                    touches = TRUE,
+                                    summary = TRUE){
+        # make polygon a spatVector
+        polygon <- terra::vect(polygon)
+        
+        # extract values
+        NAs_in_polygon <- terra::extract(rast,
+                                         polygon
+                                         , touches = touches
+                                         , ID = FALSE) %>% 
+          dplyr::pull(1) %>% 
+          is.na() %>% 
+          {if(summary) any(.) else .}
+        
+        return(NAs_in_polygon)
+      }
+      
+      # filter out plots with NAs
+      plots_filtered <- plots_sf %>% 
+        dplyr::rowwise() %>% 
+        dplyr::mutate(
+          terrainNAs = check_NAs_polygon(
+            polygon = geometry,
+            rast = terrain_rast,
+            touches = TRUE,
+            summary = TRUE
+          )
+        ) %>% 
+        dplyr::ungroup() %>% 
+        tidylog::filter(!terrainNAs)
+      
+    } else {
+      plots_filtered_sf <- plots_sf
+    }
+    
+    if(checkRoad){
+      # print message
+      cat("Filtering based on road intersections ...\n")
+      
+      check_intersect_polygon_line <- function(polygon,
+                                               line){
+        
+        # extract values
+        polygon_intersects_line_multiple <- suppressWarnings(
+          sf::st_intersection(polygon, line) %>% 
+            nrow(.) > 1  # all polygons intersect once at the origin point on the road
+        )
+        
+        return(polygon_intersects_line_multiple)
+      }
+      # filter out plots with multiple intersections
+      plots_filtered_sf <- plots_filtered_sf %>% 
+        dplyr::rowwise() %>% 
+        dplyr::mutate(roadIntersect = check_intersect_polygon_line(
+          polygon = geometry,
+          line = road_geom
+        )
+      ) %>% 
+        dplyr::ungroup() %>% 
+        tidylog::filter(!roadIntersect)
+      
+    }
+    
+    return(plots_filtered_sf)
+  }
+
+  perp_plots_bothsides_filtered <- perp_plots_bothsides_sf %>% 
   ### ~ no steep areas within perpendicular plot ----
-  
+    filter_perpendicular_plots(checkTerrain = TRUE,
+                               terrain_rast = road_dem_slopemask,
   ### ~ perpendicular plot not overlapping with road line (in road turns) ----
+                               checkRoad = TRUE,
+                               road_geom = road_geom)
+    
+    
   
   # if several remain within group, pick closest to ideal elevation
   
