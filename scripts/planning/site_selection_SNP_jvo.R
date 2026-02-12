@@ -362,7 +362,9 @@ getMIRENsites <- function(target_road  # road/trail
                                          conservative = FALSE,  # whether or not to consider adjacent cells, i.e. terra::extract(touches = TRUE)
                                          checkRoad = TRUE,
                                          road_geom,
-                                         checkWater = TRUE
+                                         road_width,
+                                         checkWater = TRUE,
+                                         checkInfrastructure = TRUE
   ){
     
     if(checkTerrain){
@@ -411,17 +413,19 @@ getMIRENsites <- function(target_road  # road/trail
       # print message
       cat("Filtering based on road intersections ...\n")
       
-      check_intersect_polygon_line <- function(polygon,
-                                               line){
+      check_intersect_polygon_line <- function(plot_polygon,
+                                               road_polygon){
 
         # Convert to sf object if it's just geometry
-        if (inherits(polygon, "sfc")) {
-          polygon <- sf::st_sf(geometry = polygon)
+        if (inherits(plot_polygon, "sfc")) {
+          plot_polygon <- sf::st_sf(geometry = plot_polygon)
         }
         
+        # # add small buffer around polygon to ensure road intersection
+        # polygon <- polygon %>% sf::st_buffer(1)
+        
         suppressWarnings({
-          intersect <- sf::st_intersection(polygon, line
-                                           , tolerance = 1)
+          intersect <- sf::st_intersection(plot_polygon, road_polygon)
         })
         
         # Handle GEOMETRYCOLLECTION - extract only LINESTRING/MULTILINESTRING
@@ -431,14 +435,14 @@ getMIRENsites <- function(target_road  # road/trail
           if (any(geom_types == "GEOMETRYCOLLECTION")) {
             # Extract linestring components from geometry collections
             intersect <- intersect %>%
-              sf::st_collection_extract(type = "LINESTRING")
+              sf::st_collection_extract(type = "POLYGON")
           }
         }
 
-        # cast to separate linestrings
+        # cast to separate polygons
         n_intersect <- intersect %>%
           # sf::st_cast("MULTILINESTRING", warn = FALSE) %>% 
-          sf::st_cast("LINESTRING", warn = FALSE) %>%
+          sf::st_cast("POLYGON", warn = FALSE) %>%
           nrow()
         
         # Explicitly handle empty result
@@ -452,12 +456,14 @@ getMIRENsites <- function(target_road  # road/trail
         
         return(return_value)
       }
+      
       # filter out plots with multiple intersections
       plots_filtered_sf <- plots_filtered_sf %>% 
         dplyr::rowwise() %>% 
         dplyr::mutate(roadIntersect = check_intersect_polygon_line(
-          polygon = geometry,
-          line = road_geom
+          plot_polygon = geometry,
+          road_polygon = sf::st_buffer(road_geom
+                                       , dist = road_width / 2)
         )
       ) %>% 
         dplyr::ungroup() %>% 
@@ -471,15 +477,16 @@ getMIRENsites <- function(target_road  # road/trail
       
       # load water bodies from OSM
       roadside_water <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom) %>% sf::st_transform("epsg:4326"),
-                                          key = "natural", value = c("water", "wetland")) %>% 
+                                          key = "natural", value = c("water", "wetland")
+                                          , max_retries = 8) %>% 
         .$osm_polygons %>% 
         sf::st_as_sf() %>% 
         sf::st_transform(crs = "epsg:2056") %>% 
         sf::st_cast("MULTIPOLYGON")
       
-      check_intersect_polygons <- function(polygon1,
+      check_intersect_polygons <- function(plot_polygon,
                                            polygon2){
-        intersects_yn <- sf::st_intersects(polygon1, 
+        intersects_yn <- sf::st_intersects(plot_polygon, 
                                            polygon2
                                            , sparse = F) %>% 
           any()
@@ -489,12 +496,77 @@ getMIRENsites <- function(target_road  # road/trail
       plots_filtered_sf <- plots_filtered_sf %>% 
         dplyr::rowwise() %>% 
         dplyr::mutate(waterIntersect = check_intersect_polygons(
-          polygon1 = geometry,
+          plot_polygon = geometry,
           polygon2 = roadside_water
         )
         ) %>% 
         dplyr::ungroup() %>% 
         tidylog::filter(!waterIntersect)
+      
+    }
+    
+    if(checkInfrastructure){
+      # print message
+      cat("Filtering based on infrastructure ...\n")
+      
+      # load buildings from OSM
+      roadside_buildings <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
+                                                                   sf::st_buffer(plot_length)) %>% 
+                                                sf::st_transform("epsg:4326"),
+                                              key = "building", value = "yes"
+                                              , max_retries = 8) %>% 
+        .$osm_polygons %>% 
+        sf::st_as_sf()
+      
+      # load parkings from OSM
+      roadside_parkings <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
+                                                                   sf::st_buffer(plot_length)) %>% 
+                                                sf::st_transform("epsg:4326"),
+                                              key = "amenity", value = "parking"
+                                              , max_retries = 8) %>% 
+        .$osm_polygons %>% 
+        sf::st_as_sf() %>% 
+        dplyr::mutate(area = sf::st_area(geometry)) %>% 
+        # exclude small parkings < 250 m2
+        dplyr::filter(as.numeric(area) > 250)
+      
+      # load railways from OSM
+      roadside_railways <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
+                                                                   sf::st_buffer(plot_length)) %>% 
+                                                sf::st_transform("epsg:4326"),
+                                              key = "landuse", value = "railway"
+                                              , max_retries = 8) %>% 
+        .$osm_lines %>% 
+        sf::st_as_sf() %>% 
+        sf::st_buffer(dist = road_width / 2)
+      
+      # combine features
+      
+      roadside_infrastructure <- dplyr::bind_rows(roadside_buildings,
+                                                  roadside_parkings,
+                                                  roadside_railways) %>% 
+        sf::st_transform(crs = "epsg:2056") %>% 
+        sf::st_cast("MULTIPOLYGON")
+      
+      check_intersect_polygons <- function(plot_polygon,
+                                           polygon2){
+        intersects_yn <- sf::st_intersects(plot_polygon, 
+                                           polygon2
+                                           , sparse = F) %>% 
+          any()
+        return(intersects_yn)
+      }
+      
+      # filter out plots with multiple intersections
+      plots_filtered_sf <- plots_filtered_sf %>% 
+        dplyr::rowwise() %>% 
+        dplyr::mutate(infraIntersect = check_intersect_polygons(
+          plot_polygon = geometry,
+          polygon2 = roadside_infrastructure
+        )
+        ) %>% 
+        dplyr::ungroup() %>% 
+        tidylog::filter(!infraIntersect)
       
     }
     
@@ -509,8 +581,11 @@ getMIRENsites <- function(target_road  # road/trail
   ### ~ perpendicular plot not overlapping with road line (in road turns) ----
                                checkRoad = TRUE,
                                road_geom = road_geom,
+                               road_width = 4,
   ### ~ plot not overlapping with larger water bodies ----
-                               checkWater = TRUE)
+                               checkWater = TRUE,
+  ### ~ plot not overlapping with infrastructure ----
+                               checkInfrastructure = TRUE)
     
     
   # if several remain within group, pick closest to ideal elevation
@@ -519,9 +594,9 @@ getMIRENsites <- function(target_road  # road/trail
     summarise(n_candidates = n()
               , .by = plot_id) %>% 
     arrange(plot_id)
-  #> 4 sites with no plots remaining!!
-  # perp_plots_bothsides_filtered %>% 
-  #   sf::st_write(file.path(miren_planning_dir, "zz_temp_flüela_perpendicular_plot_candidates.shp"))
+  #> Site 5 with no plots remaining!! in the middle of serpentines
+  perp_plots_bothsides_filtered %>%
+    sf::st_write(file.path(miren_planning_dir, "zz_temp_flüela_perpendicular_plot_candidates_filtered.shp"))
   # road_dem_slopemask %>% terra::writeRaster(file.path(miren_planning_dir, "zz_temp_flüela_slopemask.tif"))
   
   # check if all groups have left and right available
