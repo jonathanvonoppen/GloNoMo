@@ -15,6 +15,9 @@ pacman::p_load(
   tidyverse
 )
 
+# Ecology group functions
+source(file.path("P:", "common", "scripts", "EcologyGroup_functions_library.R"))
+
 data_dir <- file.path("data")
 miren_planning_dir <- file.path(data_dir, "fieldwork_planning", "MIREN_sites_SNP+")
 
