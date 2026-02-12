@@ -139,13 +139,15 @@ getMIRENsites <- function(target_road  # road/trail
                           , plot_width
                           , plot_length  # width of buffer zone
                           , resolution  # resolution along road in m
-                          , site_elev_dist_threshold  # set elevation distance threshold for sites
+                          , slope_mask_res  # resolution of slope mask raster
+                          , site_elev_dist_threshold  # set elevation distance threshold from ideal elevation for sites
 ){
   target_road <- "flüela" # test
   plot_width <- 2
   plot_length <- 105
   resolution <- 1
-  site_elev_dist_threshold <- 5
+  site_elev_dist_threshold <- 10
+  slope_mask_res <- 4
   
   target_road <- tolower(target_road)
   
@@ -163,6 +165,13 @@ getMIRENsites <- function(target_road  # road/trail
   # load DEM
   road_dem <- terra::rast(file.path(miren_planning_dir, paste0(target_road, "_road_dem_swissALTI3D_0.5m_2056.tif"))) %>% 
     setNames("elevation_m")
+  
+  # check that DEM is at same or finer resolution than desired slope mask
+  dem_res <- road_dem %>% 
+    terra::res()
+  if(!all(dem_res < slope_mask_res)) {
+    stop(paste0("desired resolution of slope mask needs to be larger than of DEM. Use a higher-resolution DEM or use larger slope mask resolution."))
+  }
   
   # check that DEM has data for all of road buffer
   NAs_in_road_buffer <- road_dem %>% 
@@ -206,7 +215,7 @@ getMIRENsites <- function(target_road  # road/trail
   
   # get road as vertices
   road_vertices <- road_geom_highres %>% 
-    sf::st_cast("POINT")
+    sf::st_cast("POINT", warn = FALSE)
   
   # get elevation along road
   road_elev <- road_dem %>% 
@@ -231,7 +240,11 @@ getMIRENsites <- function(target_road  # road/trail
                                                          , rightmost.closed = TRUE)))
   
   ## > Create perpendicular lines at vertices ----
-  create_perpendicular_plots <- function(line_geom, point_geom, length, width) {
+  create_perpendicular_plots <- function(line_geom, 
+                                         point_geom, 
+                                         length, 
+                                         width
+  ){
     # Get coordinates
     line_coords <- sf::st_coordinates(line_geom)
     point_coord <- sf::st_coordinates(point_geom)
@@ -286,7 +299,10 @@ getMIRENsites <- function(target_road  # road/trail
   
   # Create perpendicular lines
   perpendicular_plots_lr <- purrr::map(road_vertices_zones_strict$geometry, ~ {
-    create_perpendicular_plots(road_geom_highres$geometry[[1]], .x, length = 105, width = 2)
+    create_perpendicular_plots(road_geom_highres$geometry[[1]]
+                               , .x
+                               , length = plot_length
+                               , width = plot_width)
   })
   
   # Create separate sf objects for left and right
@@ -322,14 +338,17 @@ getMIRENsites <- function(target_road  # road/trail
                                  , byrow = T)
   
   # create mask
+  slope_mask_agg_factor <- (slope_mask_res %/% dem_res) %>% unique()
   road_dem_slopemask <- road_dem %>% 
+    terra::aggregate(fact = slope_mask_agg_factor, # aggregate to coarser resolution for slope calculation
+                     fun = "mean") %>% 
     terra::terrain(v = "slope"
                    , unit = "degrees") %>% 
     terra::classify(slope_masking_thresh)
   
-  # mask DEM
-  road_dem_masked <- road_dem %>% 
-    terra::mask(road_dem_slopemask)
+  # # mask DEM
+  # road_dem_masked <- road_dem %>% 
+  #   terra::mask(road_dem_slopemask)
   
   
   ## > Filter vertices ----
@@ -337,8 +356,11 @@ getMIRENsites <- function(target_road  # road/trail
   filter_perpendicular_plots <- function(plots_sf,
                                          checkTerrain = TRUE,
                                          terrain_rast,
+                                         conservative = FALSE,  # whether or not to consider adjacent cells, i.e. terra::extract(touches = TRUE)
                                          checkRoad = TRUE,
-                                         road_geom){
+                                         road_geom,
+                                         checkWater = TRUE
+  ){
     
     if(checkTerrain){
       # print message
@@ -346,8 +368,9 @@ getMIRENsites <- function(target_road  # road/trail
       
       check_NAs_polygon <- function(polygon,
                                     rast,
-                                    touches = TRUE,
-                                    summary = TRUE){
+                                    touches = conservative,  # whether or not to consider adjacent cells, i.e. terra::extract(touches = TRUE) -- passed from parent
+                                    summary = TRUE  # whether or not to return cell- (FALSE) or plot-level (TRUE) is.na()
+      ){
         # make polygon a spatVector
         polygon <- terra::vect(polygon)
         
@@ -364,13 +387,13 @@ getMIRENsites <- function(target_road  # road/trail
       }
       
       # filter out plots with NAs
-      plots_filtered <- plots_sf %>% 
+      plots_filtered_sf <- plots_sf %>% 
         dplyr::rowwise() %>% 
         dplyr::mutate(
           terrainNAs = check_NAs_polygon(
             polygon = geometry,
             rast = terrain_rast,
-            touches = TRUE,
+            touches = conservative,  # whether or not to consider adjacent cells, i.e. terra::extract(touches = TRUE) --
             summary = TRUE
           )
         ) %>% 
@@ -387,14 +410,44 @@ getMIRENsites <- function(target_road  # road/trail
       
       check_intersect_polygon_line <- function(polygon,
                                                line){
+
+        # Convert to sf object if it's just geometry
+        if (inherits(polygon, "sfc")) {
+          polygon <- sf::st_sf(geometry = polygon)
+        }
         
-        # extract values
-        polygon_intersects_line_multiple <- suppressWarnings(
-          sf::st_intersection(polygon, line) %>% 
-            nrow(.) > 1  # all polygons intersect once at the origin point on the road
-        )
+        suppressWarnings({
+          intersect <- sf::st_intersection(polygon, line
+                                           , tolerance = 1)
+        })
         
-        return(polygon_intersects_line_multiple)
+        # Handle GEOMETRYCOLLECTION - extract only LINESTRING/MULTILINESTRING
+        if (nrow(intersect) > 0) {
+          geom_types <- sf::st_geometry_type(intersect)
+          
+          if (any(geom_types == "GEOMETRYCOLLECTION")) {
+            # Extract linestring components from geometry collections
+            intersect <- intersect %>%
+              sf::st_collection_extract(type = "LINESTRING")
+          }
+        }
+
+        # cast to separate linestrings
+        n_intersect <- intersect %>%
+          # sf::st_cast("MULTILINESTRING", warn = FALSE) %>% 
+          sf::st_cast("LINESTRING", warn = FALSE) %>%
+          nrow()
+        
+        # Explicitly handle empty result
+        if (length(nrow(intersect)) == 0) {
+          return_value <- FALSE
+        } else if (n_intersect > 1) {
+          return_value <- TRUE
+        } else if (n_intersect %in% c(0, 1)) {
+          return_value <- FALSE
+        }
+        
+        return(return_value)
       }
       # filter out plots with multiple intersections
       plots_filtered_sf <- plots_filtered_sf %>% 
@@ -409,6 +462,39 @@ getMIRENsites <- function(target_road  # road/trail
       
     }
     
+    if(checkWater){
+      # print message
+      cat("Filtering based on water bodies ...\n")
+      
+      # load water bodies from OSM
+      roadside_water <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom) %>% sf::st_transform("epsg:4326"),
+                                          key = "natural", value = c("water", "wetland")) %>% 
+        .$osm_polygons %>% 
+        sf::st_as_sf() %>% 
+        sf::st_transform(crs = "epsg:2056") %>% 
+        sf::st_cast("MULTIPOLYGON")
+      
+      check_intersect_polygons <- function(polygon1,
+                                           polygon2){
+        intersects_yn <- sf::st_intersects(polygon1, 
+                                           polygon2
+                                           , sparse = F) %>% 
+          any()
+        return(intersects_yn)
+      }
+      # filter out plots with multiple intersections
+      plots_filtered_sf <- plots_filtered_sf %>% 
+        dplyr::rowwise() %>% 
+        dplyr::mutate(waterIntersect = check_intersect_polygons(
+          polygon1 = geometry,
+          polygon2 = roadside_water
+        )
+        ) %>% 
+        dplyr::ungroup() %>% 
+        tidylog::filter(!waterIntersect)
+      
+    }
+    
     return(plots_filtered_sf)
   }
 
@@ -416,13 +502,24 @@ getMIRENsites <- function(target_road  # road/trail
   ### ~ no steep areas within perpendicular plot ----
     filter_perpendicular_plots(checkTerrain = TRUE,
                                terrain_rast = road_dem_slopemask,
+                               conservative = FALSE,
   ### ~ perpendicular plot not overlapping with road line (in road turns) ----
                                checkRoad = TRUE,
-                               road_geom = road_geom)
+                               road_geom = road_geom,
+  ### ~ plot not overlapping with larger water bodies ----
+                               checkWater = TRUE)
     
     
-  
   # if several remain within group, pick closest to ideal elevation
+  perp_plots_bothsides_filtered %>% 
+    sf::st_drop_geometry() %>% 
+    summarise(n_candidates = n()
+              , .by = plot_id) %>% 
+    arrange(plot_id)
+  #> 4 sites with no plots remaining!!
+  # perp_plots_bothsides_filtered %>% 
+  #   sf::st_write(file.path(miren_planning_dir, "zz_temp_flüela_perpendicular_plot_candidates.shp"))
+  # road_dem_slopemask %>% terra::writeRaster(file.path(miren_planning_dir, "zz_temp_flüela_slopemask.tif"))
   
   # check if all groups have left and right available
   
@@ -430,7 +527,7 @@ getMIRENsites <- function(target_road  # road/trail
   
   ## if no, ??
   
-  ## pick alternative plots within groups
+  ## select x alternative plots within groups
   
 }
 # 
