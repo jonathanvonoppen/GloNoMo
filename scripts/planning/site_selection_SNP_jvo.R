@@ -144,6 +144,8 @@ getMIRENsites <- function(target_road  # road/trail
                           , resolution  # resolution along road in m
                           , slope_mask_res  # resolution of slope mask raster
                           , site_elev_dist_threshold  # set elevation distance threshold from ideal elevation for sites
+                          , site_elevations_file
+                          , spatial_objects_filter = c("slope", "road", "water", "infrastructure")  # which spatial filter to apply for candidate plots
 ){
   target_road <- "flüela" # test
   plot_width <- 2
@@ -191,17 +193,27 @@ getMIRENsites <- function(target_road  # road/trail
 
   
   ## > Limit road vector to ideal site elevation ----
+  if(stringr::str_ends(site_elevations_file, ".xlsx")) read_fun <- readxl::read_excel
+  if(stringr::str_ends(site_elevations_file, ".csv")) read_fun <- readr::read_csv
   
-  site_elev <- readxl::read_excel(file.path(miren_planning_dir, "Site_setup.xlsx")) %>% 
+  site_elev <- readxl::read_excel(site_elevations_file) %>% 
     dplyr::rename(plot_id = 1) %>% 
+    # filter out summary stats at the bottom
+    dplyr::filter(stringr::str_detect(plot_id, "Plot [0-9]+")) %>% 
+    # make plot IDs numeric
+    dplyr::mutate(plot_id = stringr::str_remove(plot_id, "^Site |^site |^Plot | ^plot "),
+                  plot_id = as.numeric(plot_id)) %>% 
     dplyr::select(plot_id, 
                   dplyr::contains(target_road, ignore.case = TRUE)) %>% 
     dplyr::rename("elevation_m" = 2) %>% 
-    # filter out summary stats at the bottom
-    dplyr::filter(stringr::str_detect(plot_id, "Plot [0-9]")) %>% 
     # create lower- and higher-elevation threshold columns for each plot group
     dplyr::mutate(elev_threshold_low = elevation_m - site_elev_dist_threshold,
                   elev_threshold_high = elevation_m + site_elev_dist_threshold) 
+  
+  n_sites <- site_elev %>% 
+    dplyr::pull(plot_id) %>% 
+    unique() %>% 
+    length()
   
   # # transform into classification matrix for masking
   # site_elev_dist_threshold <- 5
@@ -572,40 +584,176 @@ getMIRENsites <- function(target_road  # road/trail
     
     return(plots_filtered_sf)
   }
+  
+  # exclude plot candidates overlapping with steep terrain, road, water, infrastructure etc
+  if(any(c("terrain", "slope") %in% spatial_objects_filter)) check_steep_terrain <- TRUE
+  if("road" %in% spatial_objects_filter) check_road_overlap <- TRUE
+  if("water" %in% spatial_objects_filter) check_water_overlap <- TRUE
+  if("infrastructure" %in% spatial_objects_filter) check_infrastructure_overlap <- TRUE
 
   perp_plots_bothsides_filtered <- perp_plots_bothsides_sf %>% 
   ### ~ no steep areas within perpendicular plot ----
-    filter_perpendicular_plots(checkTerrain = TRUE,
+    filter_perpendicular_plots(checkTerrain = check_steep_terrain,
                                terrain_rast = road_dem_slopemask,
                                conservative = FALSE,
   ### ~ perpendicular plot not overlapping with road line (in road turns) ----
-                               checkRoad = TRUE,
+                               checkRoad = check_road_overlap,
                                road_geom = road_geom,
                                road_width = 4,
   ### ~ plot not overlapping with larger water bodies ----
-                               checkWater = TRUE,
+                               checkWater = check_water_overlap,
   ### ~ plot not overlapping with infrastructure ----
-                               checkInfrastructure = TRUE)
+                               checkInfrastructure = check_infrastructure_overlap)
+  
+            #   
+            #           # perp_plots_bothsides_filtered %>% 
+            #           #   sf::st_drop_geometry() %>% 
+            #           #   summarise(n_candidates = n()
+            #           #             , .by = plot_id) %>% 
+            #           #   arrange(plot_id)
+            #           # #> Site 5 with no plots remaining!! in the middle of serpentines
+            # perp_plots_bothsides_filtered %>%
+            #   sf::st_write(file.path(miren_planning_dir, "zz_temp_flüela_perpendicular_plot_candidates_filtered.shp"))
+            # # road_dem_slopemask %>% terra::writeRaster(file.path(miren_planning_dir, "zz_temp_flüela_slopemask.tif"))
     
-    
-  # if several remain within group, pick closest to ideal elevation
-  perp_plots_bothsides_filtered %>% 
+  
+  ## > Select final plots ----
+  
+  ### ~ pick closest to ideal elevation if several remain within a group ----
+  perp_plots_bothsides_selection <- perp_plots_bothsides_filtered %>% 
+    dplyr::left_join(site_elev %>% dplyr::select(plot_id,
+                                                 elevation_ideal = elevation_m)
+                     , by = "plot_id") %>% 
+    dplyr::mutate(elevation_diff_abs = abs(elevation_m - elevation_ideal)) %>% 
+    dplyr::slice_min(order_by = elevation_diff_abs,
+                     by = c(plot_id, side),
+                     n = 1,
+                     with_ties = FALSE) %>% 
+    dplyr::arrange(plot_id)
+  
+  ### ~ check if all groups have left and right available ----
+  
+  ## determine any sites missing entirely
+  sites_missing <- setdiff(site_elev$plot_id, unique(perp_plots_bothsides_selection$plot_id))
+  ## print warning
+  warning(paste0("After applying spatial filters with current settings, no available plots remain at site(s) ", paste(sites_missing, collapse = ", "), "."))
+  
+  if(length(sites_missing) > 0){
+    sites_missing <- tibble::tibble(plot_id = rep(sites_missing, each = 2),
+                                    side = c("left", "right"),
+                                    available = FALSE)
+  }
+  sites_lr_available <- perp_plots_bothsides_selection %>% 
     sf::st_drop_geometry() %>% 
-    summarise(n_candidates = n()
-              , .by = plot_id) %>% 
-    arrange(plot_id)
-  #> Site 5 with no plots remaining!! in the middle of serpentines
-  perp_plots_bothsides_filtered %>%
-    sf::st_write(file.path(miren_planning_dir, "zz_temp_flüela_perpendicular_plot_candidates_filtered.shp"))
-  # road_dem_slopemask %>% terra::writeRaster(file.path(miren_planning_dir, "zz_temp_flüela_slopemask.tif"))
+    dplyr::mutate(available = TRUE) %>% 
+    dplyr::select(plot_id, side, available) %>% 
+    {if(length(sites_missing) > 0) dplyr::bind_rows(., sites_missing) else .} %>% 
+    tidyr::pivot_wider(names_from = side,
+                       values_from = available
+                       , values_fill = FALSE) %>% 
+    dplyr::arrange(plot_id)
   
-  # check if all groups have left and right available
+  ## check left-side plots, print warning
+  sites_wo_left <- sites_lr_available %>% dplyr::filter(!left) %>% dplyr::pull(plot_id)
+  if(length(sites_wo_left) > 0) 
+    warning(paste0("After applying spatial filters, no available LEFT-side plots remaining at site(s) ", paste(sort(sites_wo_left), collapse = ", "), "."))
   
-  ## if yes, pick random order
+  ## check right-side plots, print warning
+  sites_wo_right <- sites_lr_available %>% dplyr::filter(!right) %>% dplyr::pull(plot_id)
+  if(length(sites_wo_right) > 0) 
+    warning(paste0("After applying spatial filters, no available RIGHT-side plots remaining at site(s) ", paste(sort(sites_wo_right), collapse = ", "), "."))
   
-  ## if no, ??
+  ### ~ determine left-right sequence ----
   
-  ## select x alternative plots within groups
+  ## if all left/right combinations available, pick random order
+  all_available <- length(c(sites_wo_left, sites_wo_right)) == 0
+  if(all_available){
+    set.seed(35)
+    start_side <- sample(c("left", "right"), 1)
+    # set order of sides, select final plots
+    order_select_sites <- function(start_side = start_side,
+                                   all_sites_lr = sites_lr_available,
+                                   candidate_plot_selection = perp_plots_bothsides_selection){
+      # get alternating sequence
+      sides_order <- rep(c(start_side,
+                           setdiff(c("left", "right"), start_side)),
+                         times = ceiling(n_sites/2))
+      # combine plots with sequence
+      target_sites_sides <- tibble::tibble(plot_id = all_sites_lr$plot_id,
+                                           target_side = sides_order)
+      # filter candidates selection for final sides to sample
+      sites_plot_selection <- candidate_plot_selection %>%
+        dplyr::select(plot_id, 
+                      elevation_m, 
+                      side,
+                      geometry) %>% 
+        dplyr::left_join(target_sites_sides
+                         , by = "plot_id") %>% 
+        dplyr::filter(side == target_side) %>% 
+        dplyr::select(-target_side)
+      return(sites_plot_selection)
+    }
+    target_sites_selection <- order_select_sites(start_side = start_side,
+                                                 all_sites_lr = sites_lr_available,
+                                                 candidate_plot_selection = perp_plots_bothsides_selection)
+    
+  } else {
+    
+  ## if not all left-right combinations available, check which starting side returns the longer sequence
+    
+    sites_left_first <- sites_lr_available %>%
+      tidyr::pivot_longer(cols = c(left, right), names_to = "side", values_to = "available") %>%
+      dplyr::filter(available == TRUE) %>%
+      dplyr::arrange(plot_id, side)
+    sites_right_first <- sites_lr_available %>%
+      tidyr::pivot_longer(cols = c(left, right), names_to = "side", values_to = "available") %>%
+      dplyr::filter(available == TRUE) %>%
+      dplyr::arrange(plot_id, desc(side))
+    determine_alternating_sequence_length <- function(sites_df){
+      sites_df %>%
+        dplyr::mutate(
+          alternates = side != dplyr::lag(side, default = ""),
+          group = cumsum(!alternates)
+        ) %>%
+        dplyr::group_by(group) %>%
+        dplyr::mutate(seq_length = n()) %>%
+        dplyr::ungroup() %>%
+        dplyr::filter(seq_length == max(seq_length)) %>%
+        nrow()
+    }
+    if(determine_alternating_sequence_length(sites_left_first) > determine_alternating_sequence_length(sites_right_first)){  # if starting left yields longer alternating sequence
+      start_side <- "left"
+    } else if(determine_alternating_sequence_length(sites_left_first) < determine_alternating_sequence_length(sites_right_first)){  # if starting right yields longer alternating sequence
+      start_side <- "right"
+    } else if(determine_alternating_sequence_length(sites_left_first) == determine_alternating_sequence_length(sites_right_first)){  # if even
+      start_side <- sample(c("left", "right"), 1)  # determine random starting side
+    }
+    
+    target_sites_selection <- order_select_sites(start_side = start_side,
+                                                 all_sites_lr = sites_lr_available,
+                                                 candidate_plot_selection = perp_plots_bothsides_selection)
+  }
   
+  ## > Obtain convex hull around all candidate plots within site ----
+  site_hulls_candidate_plots <- perp_plots_bothsides_filtered %>% 
+    dplyr::group_by(plot_id) %>% 
+    dplyr::summarise(geometry = sf::st_union(geometry),
+                     n_plot_candidates = n()
+                     , .groups = "drop") %>% 
+    sf::st_convex_hull()
+  
+  ## > Return list of selected sites and candidate plots hull ----
+  return(list(priority_plots = target_sites_selection,
+              site_hulls = site_hulls_candidate_plots))
 }
-# 
+
+# run function for multiple roads/tracks
+glonomo_sites_snpp <- purrr::map(c("Flüela", "Ofenpass", "Umbrail")
+                                 , ~getMIRENsites(target_road = .x, 
+                                                  plot_width = 2, plot_length = 105, 
+                                                  resolution = 1, 
+                                                  slope_mask_res = 4, 
+                                                  site_elev_dist_threshold = 10, 
+                                                  site_elevations_file = file.path(miren_planning_dir, "Site_setup.xlsx"), 
+                                                  spatial_objects_filter = c("slope", "road", "water", "infrastructure"))
+)
