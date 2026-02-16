@@ -152,14 +152,20 @@ getMIRENsites <- function(target_road  # road/trail
                           , write_output = TRUE
 ){
   # target_road <- "flüela" # test
-  # plot_width <- 2
-  # plot_length <- 105
-  # resolution <- 1
-  # site_elev_dist_threshold <- 10
-  # slope_mask_res <- 4
+  # plot_width = 2
+  # plot_length = 105
+  # resolution = 1
+  # slope_mask_res = 4
+  # slope_threshold_value = 35
+  # site_elev_dist_threshold = 10
+  # input_data_dir = file.path(miren_planning_dir, "input_data")
+  # site_elevations_file = "Site_setup.xlsx"
+  # spatial_objects_filter = c("slope", "road", "water", "infrastructure")
+  # output_dir = file.path(miren_planning_dir, "output_target_sites", target_road)
+  # write_output = c("points", "hulls")
   
   target_road <- tolower(target_road)
-  cat(paste0("Target geometry: ", stringr::str_to_title(target_road)))
+  cat(paste0("Target geometry: ", stringr::str_to_title(target_road), "\n"))
   
   ## > Determine target zones ----
   
@@ -203,7 +209,7 @@ getMIRENsites <- function(target_road  # road/trail
   if(stringr::str_ends(site_elevations_file, ".xlsx")) read_fun <- readxl::read_excel
   if(stringr::str_ends(site_elevations_file, ".csv")) read_fun <- readr::read_csv
   
-  site_elev <- readxl::read_excel(site_elevations_file) %>% 
+  site_elev <- read_fun(file.path(input_data_dir, site_elevations_file)) %>% 
     dplyr::rename(plot_id = 1) %>% 
     # filter out summary stats at the bottom
     dplyr::filter(stringr::str_detect(plot_id, "Plot [0-9]+")) %>% 
@@ -257,9 +263,10 @@ getMIRENsites <- function(target_road  # road/trail
     # add unique ID column
     dplyr::mutate(id = 1:nrow(.)) %>% 
     # add Plot ID from site_elev
-    dplyr::mutate(plot_id = paste0("Plot ", findInterval(elevation_m
-                                                         , site_elev$elev_threshold_low
-                                                         , rightmost.closed = TRUE)))
+    dplyr::mutate(plot_id = findInterval(elevation_m
+                                         , site_elev$elev_threshold_low
+                                         , rightmost.closed = TRUE),
+                  plot_id = as.numeric(plot_id))
   
   ## > Create perpendicular lines at vertices ----
   create_perpendicular_plots <- function(line_geom, 
@@ -389,7 +396,7 @@ getMIRENsites <- function(target_road  # road/trail
     
     if(checkTerrain){
       # print message
-      cat("Filtering based on terrain mask ...\n")
+      cat(" -- > filtering based on terrain mask ...\n")
       
       check_NAs_polygon <- function(polygon,
                                     rast,
@@ -431,7 +438,7 @@ getMIRENsites <- function(target_road  # road/trail
     
     if(checkRoad){
       # print message
-      cat("Filtering based on road intersections ...\n")
+      cat(" -- > filtering based on road intersections ...\n")
       
       check_intersect_polygon_line <- function(plot_polygon,
                                                road_polygon){
@@ -493,12 +500,12 @@ getMIRENsites <- function(target_road  # road/trail
     
     if(checkWater){
       # print message
-      cat("Filtering based on water bodies ...\n")
+      cat(" -- > filtering based on water bodies ...\n")
       
       # load water bodies from OSM
       roadside_water <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom) %>% sf::st_transform("epsg:4326"),
                                           key = "natural", value = c("water", "wetland")
-                                          , max_retries = 8) %>% 
+                                          , max_retries = 10) %>% 
         .$osm_polygons %>% 
         sf::st_as_sf() %>% 
         sf::st_transform(crs = "epsg:2056") %>% 
@@ -527,14 +534,14 @@ getMIRENsites <- function(target_road  # road/trail
     
     if(checkInfrastructure){
       # print message
-      cat("Filtering based on infrastructure ...\n")
+      cat(" -- > filtering based on infrastructure ...\n")
       
       # load buildings from OSM
       roadside_buildings <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
                                                                    sf::st_buffer(plot_length)) %>% 
                                                 sf::st_transform("epsg:4326"),
                                               key = "building", value = "yes"
-                                              , max_retries = 8) %>% 
+                                              , max_retries = 10) %>% 
         .$osm_polygons %>% 
         sf::st_as_sf()
       
@@ -543,7 +550,7 @@ getMIRENsites <- function(target_road  # road/trail
                                                                    sf::st_buffer(plot_length)) %>% 
                                                 sf::st_transform("epsg:4326"),
                                               key = "amenity", value = "parking"
-                                              , max_retries = 8) %>% 
+                                              , max_retries = 10) %>% 
         .$osm_polygons %>% 
         sf::st_as_sf() %>% 
         dplyr::mutate(area = sf::st_area(geometry)) %>% 
@@ -555,7 +562,7 @@ getMIRENsites <- function(target_road  # road/trail
                                                                    sf::st_buffer(plot_length)) %>% 
                                                 sf::st_transform("epsg:4326"),
                                               key = "landuse", value = "railway"
-                                              , max_retries = 8) %>% 
+                                              , max_retries = 10) %>% 
         .$osm_lines %>% 
         sf::st_as_sf() %>% 
         sf::st_buffer(dist = road_width / 2)
@@ -647,10 +654,11 @@ getMIRENsites <- function(target_road  # road/trail
   
   ## determine any sites missing entirely
   sites_missing <- setdiff(site_elev$plot_id, unique(perp_plots_bothsides_selection$plot_id))
-  ## print warning
-  warning(paste0("After applying spatial filters with current settings, no available plots remain at site(s) ", paste(sites_missing, collapse = ", "), "."))
   
   if(length(sites_missing) > 0){
+    ## print warning
+    warning(paste0("After applying spatial filters with current settings, no available plots remain at site(s) ", paste(sites_missing, collapse = ", "), "."))
+    
     sites_missing <- tibble::tibble(plot_id = rep(sites_missing, each = 2),
                                     side = c("left", "right"),
                                     available = FALSE)
@@ -847,7 +855,7 @@ getMIRENsites <- function(target_road  # road/trail
     
     # write shapefile
     if(!dir.exists(output_dir)) dir.create(output_dir)
-    if(write_output == TRUE | "points" %in% write_output){
+    if(length(write_output) == 1 && write_output == TRUE | "points" %in% write_output){
       sf::st_write(target_plot_points,
                    dsn = file.path(output_dir, paste0("GloNoMo_MIREN_target_plot_points_", target_road, ".shp")))
     }
@@ -861,7 +869,7 @@ getMIRENsites <- function(target_road  # road/trail
                      , .groups = "drop") %>% 
     sf::st_convex_hull()
   
-  if(write_output == TRUE | "hulls" %in% write_output){
+  if(length(write_output) == 1 && write_output == TRUE | "hulls" %in% write_output){
     sf::st_write(site_hulls_candidate_plots,
                  dsn = file.path(output_dir, paste0("GloNoMo_MIREN_potential_sampling_areas_", target_road, ".shp")))
   }
@@ -871,7 +879,7 @@ getMIRENsites <- function(target_road  # road/trail
               site_hulls = site_hulls_candidate_plots))
 }
 
-# run function for multiple roads/tracks
+# Run function for multiple roads/tracks ----
 glonomo_sites_snpp <- purrr::map(c(
   "Flüela", 
   "Ofenpass",
@@ -882,8 +890,8 @@ glonomo_sites_snpp <- purrr::map(c(
                   slope_mask_res = 4, 
                   slope_threshold_value = 35,
                   site_elev_dist_threshold = 10, 
-                  input_data_dir = file.path(miren_planning_dir, input_data),
-                  site_elevations_file = file.path(input_data_dir, "Site_setup.xlsx"), 
+                  input_data_dir = file.path(miren_planning_dir, "input_data"),
+                  site_elevations_file = "Site_setup.xlsx", 
                   spatial_objects_filter = c("slope", "road", "water", "infrastructure"),
                   output_dir = file.path(miren_planning_dir, "output_target_sites", .x),
                   write_output = c("points", "hulls")
