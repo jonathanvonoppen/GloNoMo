@@ -143,6 +143,7 @@ getMIRENsites <- function(target_road  # road/trail
                           , plot_length  # width of buffer zone
                           , resolution  # resolution along road in m
                           , slope_mask_res  # resolution of slope mask raster
+                          , slope_threshold_value  # threshold value (degrees) for masking steep slopes
                           , site_elev_dist_threshold  # set elevation distance threshold from ideal elevation for sites
                           , site_elevations_file
                           , spatial_objects_filter = c("slope", "road", "water", "infrastructure")  # which spatial filter to apply for candidate plots
@@ -155,9 +156,12 @@ getMIRENsites <- function(target_road  # road/trail
   # slope_mask_res <- 4
   
   target_road <- tolower(target_road)
-  
+  cat(paste0("Target geometry: ", stringr::str_to_title(target_road)))
   
   ## > Determine target zones ----
+  
+  cat(" -- determining potential starting points for plots ...\n")
+  
   # load geometry
   road_geom <- sf::read_sf(file.path(miren_planning_dir, paste0(target_road, "_road_osm_2056.shp")))
   
@@ -312,6 +316,8 @@ getMIRENsites <- function(target_road  # road/trail
     return(perp_plots_lr)
   }
   
+  cat(" -- computing potential plot polygons ...\n")
+  
   # Create perpendicular lines
   perpendicular_plots_lr <- purrr::map(road_vertices_zones_strict$geometry, ~ {
     create_perpendicular_plots(road_geom_highres$geometry[[1]]
@@ -343,10 +349,9 @@ getMIRENsites <- function(target_road  # road/trail
   
   ## > Mask DEM (slope, road) ----
   
-  # create buffer version of 
+  cat(" -- masking steep slopes ...\n")
   
   # calculate steep slope mask
-  slope_threshold_value <- 35
   slope_masking_thresh <- matrix(c(-Inf, slope_threshold_value, 1,
                                    slope_threshold_value, Inf, NA)
                                  , ncol = 3
@@ -585,6 +590,8 @@ getMIRENsites <- function(target_road  # road/trail
     return(plots_filtered_sf)
   }
   
+  cat(" -- filtering potential plots ...\n")
+  
   # exclude plot candidates overlapping with steep terrain, road, water, infrastructure etc
   if(any(c("terrain", "slope") %in% spatial_objects_filter)) check_steep_terrain <- TRUE
   if("road" %in% spatial_objects_filter) check_road_overlap <- TRUE
@@ -618,6 +625,8 @@ getMIRENsites <- function(target_road  # road/trail
     
   
   ## > Select final plots ----
+  
+  cat(" -- determining final set of plots ...\n")
   
   ### ~ pick closest to ideal elevation if several remain within a group ----
   perp_plots_bothsides_selection <- perp_plots_bothsides_filtered %>% 
@@ -756,6 +765,7 @@ glonomo_sites_snpp <- purrr::map(c(
                   plot_width = 2, plot_length = 105, 
                   resolution = 1, 
                   slope_mask_res = 4, 
+                  slope_threshold_value = 35,
                   site_elev_dist_threshold = 10, 
                   site_elevations_file = file.path(miren_planning_dir, "Site_setup.xlsx"), 
                   spatial_objects_filter = c("slope", "road", "water", "infrastructure"))
