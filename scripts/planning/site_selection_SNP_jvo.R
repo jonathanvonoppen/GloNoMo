@@ -144,9 +144,12 @@ getMIRENsites <- function(target_road  # road/trail
                           , resolution  # resolution along road in m
                           , slope_mask_res  # resolution of slope mask raster
                           , slope_threshold_value  # threshold value (degrees) for masking steep slopes
-                          , site_elev_dist_threshold  # set elevation distance threshold from ideal elevation for sites
-                          , site_elevations_file
                           , spatial_objects_filter = c("slope", "road", "water", "infrastructure")  # which spatial filter to apply for candidate plots
+                          , site_elev_dist_threshold  # set elevation distance threshold from ideal elevation for sites
+                          , input_data_dir
+                          , site_elevations_file  # file with ideal elevations per site
+                          , output_dir
+                          , write_output = TRUE
 ){
   # target_road <- "flüela" # test
   # plot_width <- 2
@@ -163,7 +166,7 @@ getMIRENsites <- function(target_road  # road/trail
   cat(" -- determining potential starting points for plots ...\n")
   
   # load geometry
-  road_geom <- sf::read_sf(file.path(miren_planning_dir, paste0(target_road, "_road_osm_2056.shp")))
+  road_geom <- sf::read_sf(file.path(input_data_dir, paste0(target_road, "_road_osm_2056.shp")))
   
   # add buffer to geometry
   road_geom_buffer <- road_geom %>% 
@@ -172,7 +175,7 @@ getMIRENsites <- function(target_road  # road/trail
   
   ## > Load DEM ----
   # load DEM
-  road_dem <- terra::rast(file.path(miren_planning_dir, paste0(target_road, "_road_dem_swissALTI3D_0.5m_2056.tif"))) %>% 
+  road_dem <- terra::rast(file.path(input_data_dir, paste0(target_road, "_road_dem_swissALTI3D_0.5m_2056.tif"))) %>% 
     setNames("elevation_m")
   
   # check that DEM is at same or finer resolution than desired slope mask
@@ -741,6 +744,113 @@ getMIRENsites <- function(target_road  # road/trail
     target_sites_selection <- order_select_sites(start_side = start_side,
                                                  all_sites_lr = sites_lr_available,
                                                  candidate_plot_selection = perp_plots_bothsides_selection)
+    
+    # get points at roadside
+    
+    find_roadside_point <- function(plot_polygon,  # plot polygon perpendicular to road
+                                    road_geom,  # road geometry
+                                    distance = 2  # distance from road centre in m
+                                    ) {
+    
+      # plot_polygon <- polygon_test_F %>% st_sf()
+      # distance <- 2
+      
+      # 1. Get polygon vertices
+      coords <- st_coordinates(st_cast(st_boundary(plot_polygon), "POINT", warn = FALSE))
+      coords <- coords[1:(nrow(coords)-1), ]  # Remove duplicate last point
+      
+      # 2. Find the longest edge (orientation of rectangle)
+      max_length <- 0
+      best_edge <- NULL
+      
+      for (i in 1:nrow(coords)) {
+        next_i <- ifelse(i == nrow(coords), 1, i + 1)
+        
+        edge_length <- sqrt((coords[next_i, "X"] - coords[i, "X"])^2 + 
+                              (coords[next_i, "Y"] - coords[i, "Y"])^2)
+        
+        if (edge_length > max_length) {
+          max_length <- edge_length
+          best_edge <- c(i, next_i)
+        }
+      }
+      
+      # 3. Calculate direction vector from longest edge
+      dx <- coords[best_edge[2], "X"] - coords[best_edge[1], "X"]
+      dy <- coords[best_edge[2], "Y"] - coords[best_edge[1], "Y"]
+      
+      # Normalize direction vector
+      length_edge <- sqrt(dx^2 + dy^2)
+      dx_norm <- dx / length_edge
+      dy_norm <- dy / length_edge
+      
+      # 4. Create centerline along this direction through polygon centroid
+      suppressWarnings({
+        centroid <- st_centroid(plot_polygon)
+      })
+      centroid_coords <- st_coordinates(centroid)
+      
+      # Extend centerline far in both directions
+      extension <- 500
+      
+      start_point <- c(centroid_coords[1, "X"] - dx_norm * extension,
+                       centroid_coords[1, "Y"] - dy_norm * extension)
+      end_point <- c(centroid_coords[1, "X"] + dx_norm * extension,
+                     centroid_coords[1, "Y"] + dy_norm * extension)
+      
+      centerline <- st_linestring(rbind(start_point, end_point))
+      centerline <- st_sfc(centerline, crs = st_crs(plot_polygon))
+      
+      # 5. Find intersection with road
+      int_point <- st_intersection(centerline, road_geom)
+      
+      if (length(int_point) == 0) {
+        stop("Centerline does not intersect the reference line")
+      }
+      
+      int_point <- st_cast(int_point, "POINT")[1]
+      int_coords <- st_coordinates(int_point)
+      
+      # 6. Determine correct direction (toward polygon centroid)
+      to_centroid_x <- centroid_coords[1, "X"] - int_coords[1, "X"]
+      to_centroid_y <- centroid_coords[1, "Y"] - int_coords[1, "Y"]
+      
+      # Check if direction vector points toward centroid
+      dot_product <- dx_norm * to_centroid_x + dy_norm * to_centroid_y
+
+      if (dot_product < 0) {
+        # Reverse direction
+        dx_norm <- -dx_norm
+        dy_norm <- -dy_norm
+      }
+      
+      # 7. Calculate target point at distance along centerline
+      target_x <- int_coords[1, "X"] + dx_norm * distance
+      target_y <- int_coords[1, "Y"] + dy_norm * distance
+      
+      target_point <- st_point(c(target_x, target_y))
+      target_point <- st_sfc(target_point, crs = st_crs(plot_polygon))
+      
+      return(target_point)
+    }
+    
+    target_plot_points <- target_sites_selection %>% 
+      dplyr::rowwise() %>% 
+      dplyr::mutate(geometry = find_roadside_point(geometry, 
+                                                   road_geom = road_geom, 
+                                                   distance = 3)) %>% 
+      dplyr::ungroup() %>% 
+      dplyr::select(plot_id, 
+                    elevation_m, 
+                    side, 
+                    geometry)
+    
+    # write shapefile
+    if(!dir.exists(output_dir)) dir.create(output_dir)
+    if(write_output == TRUE | "points" %in% write_output){
+      sf::st_write(target_plot_points,
+                   dsn = file.path(output_dir, paste0("GloNoMo_MIREN_target_plot_points_", target_road, ".shp")))
+    }
   }
   
   ## > Obtain convex hull around all candidate plots within site ----
@@ -751,6 +861,11 @@ getMIRENsites <- function(target_road  # road/trail
                      , .groups = "drop") %>% 
     sf::st_convex_hull()
   
+  if(write_output == TRUE | "hulls" %in% write_output){
+    sf::st_write(site_hulls_candidate_plots,
+                 dsn = file.path(output_dir, paste0("GloNoMo_MIREN_potential_sampling_areas_", target_road, ".shp")))
+  }
+  
   ## > Return list of selected sites and candidate plots hull ----
   return(list(priority_plots = target_sites_selection,
               site_hulls = site_hulls_candidate_plots))
@@ -759,14 +874,18 @@ getMIRENsites <- function(target_road  # road/trail
 # run function for multiple roads/tracks
 glonomo_sites_snpp <- purrr::map(c(
   "Flüela", 
-  # "Ofenpass", 
-  # "Umbrail"
+  "Ofenpass",
+  "Umbrail"
 ), ~getMIRENsites(target_road = .x, 
                   plot_width = 2, plot_length = 105, 
                   resolution = 1, 
                   slope_mask_res = 4, 
                   slope_threshold_value = 35,
                   site_elev_dist_threshold = 10, 
-                  site_elevations_file = file.path(miren_planning_dir, "Site_setup.xlsx"), 
-                  spatial_objects_filter = c("slope", "road", "water", "infrastructure"))
+                  input_data_dir = file.path(miren_planning_dir, input_data),
+                  site_elevations_file = file.path(input_data_dir, "Site_setup.xlsx"), 
+                  spatial_objects_filter = c("slope", "road", "water", "infrastructure"),
+                  output_dir = file.path(miren_planning_dir, "output_target_sites", .x),
+                  write_output = c("points", "hulls")
+)
 )
