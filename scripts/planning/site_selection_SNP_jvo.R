@@ -147,12 +147,12 @@ getMIRENsites <- function(target_road  # road/trail
                           , site_elevations_file
                           , spatial_objects_filter = c("slope", "road", "water", "infrastructure")  # which spatial filter to apply for candidate plots
 ){
-  target_road <- "flüela" # test
-  plot_width <- 2
-  plot_length <- 105
-  resolution <- 1
-  site_elev_dist_threshold <- 10
-  slope_mask_res <- 4
+  # target_road <- "flüela" # test
+  # plot_width <- 2
+  # plot_length <- 105
+  # resolution <- 1
+  # site_elev_dist_threshold <- 10
+  # slope_mask_res <- 4
   
   target_road <- tolower(target_road)
   
@@ -192,7 +192,7 @@ getMIRENsites <- function(target_road  # road/trail
   }
 
   
-  ## > Limit road vector to ideal site elevation ----
+  ## > Limit road vector to ideal site elevation +- max elevation distance ----
   if(stringr::str_ends(site_elevations_file, ".xlsx")) read_fun <- readxl::read_excel
   if(stringr::str_ends(site_elevations_file, ".csv")) read_fun <- readr::read_csv
   
@@ -748,12 +748,15 @@ getMIRENsites <- function(target_road  # road/trail
 }
 
 # run function for multiple roads/tracks
-glonomo_sites_snpp <- purrr::map(c("Flüela", "Ofenpass", "Umbrail")
-                                 , ~getMIRENsites(target_road = .x, 
-                                                  plot_width = 2, plot_length = 105, 
-                                                  resolution = 1, 
-                                                  slope_mask_res = 4, 
-                                                  site_elev_dist_threshold = 10, 
-                                                  site_elevations_file = file.path(miren_planning_dir, "Site_setup.xlsx"), 
-                                                  spatial_objects_filter = c("slope", "road", "water", "infrastructure"))
+glonomo_sites_snpp <- purrr::map(c(
+  "Flüela", 
+  # "Ofenpass", 
+  # "Umbrail"
+), ~getMIRENsites(target_road = .x, 
+                  plot_width = 2, plot_length = 105, 
+                  resolution = 1, 
+                  slope_mask_res = 4, 
+                  site_elev_dist_threshold = 10, 
+                  site_elevations_file = file.path(miren_planning_dir, "Site_setup.xlsx"), 
+                  spatial_objects_filter = c("slope", "road", "water", "infrastructure"))
 )
