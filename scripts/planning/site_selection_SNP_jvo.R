@@ -536,39 +536,40 @@ getMIRENsites <- function(target_road  # road/trail
       # print message
       cat(" -- > filtering based on infrastructure ...\n")
       
-      # load buildings from OSM
-      roadside_buildings <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
-                                                                   sf::st_buffer(plot_length)) %>% 
-                                                sf::st_transform("epsg:4326"),
-                                              key = "building", value = "yes"
-                                              , max_retries = 10) %>% 
+      # load OSM data
+      roadside_infrastructure_all <- queryOSMwithRetry_multiple(bbox = sf::st_bbox(road_geom %>% 
+                                                                                     sf::st_buffer(plot_length)) %>% 
+                                                                  sf::st_transform("epsg:4326"),
+                                                                query1 = c("building", "yes"),
+                                                                query2 = c("amenity", "parking"),
+                                                                query3 = c("landuse", "railway"),
+                                                                max_retries = 10) 
+      
+      # get buildings 
+      roadside_buildings <- roadside_infrastructure_all %>% 
         .$osm_polygons %>% 
+        dplyr::filter(building == "yes") %>% 
         sf::st_as_sf()
       
       # load parkings from OSM
-      roadside_parkings <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
-                                                                   sf::st_buffer(plot_length)) %>% 
-                                                sf::st_transform("epsg:4326"),
-                                              key = "amenity", value = "parking"
-                                              , max_retries = 10) %>% 
+      roadside_parkings <- roadside_infrastructure_all %>% 
         .$osm_polygons %>% 
-        sf::st_as_sf() %>% 
-        dplyr::mutate(area = sf::st_area(geometry)) %>% 
-        # exclude small parkings < 250 m2
-        dplyr::filter(as.numeric(area) > 250)
+        {if(!is.null(.)) 
+          dplyr::filter(., amenity == "parking") %>% 
+            dplyr::mutate(area = sf::st_area(geometry)) %>% 
+            # exclude small parkings < 250 m2
+            dplyr::filter(as.numeric(area) > 250)
+          else .}
       
       # load railways from OSM
-      roadside_railways <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
-                                                                   sf::st_buffer(plot_length)) %>% 
-                                                sf::st_transform("epsg:4326"),
-                                              key = "landuse", value = "railway"
-                                              , max_retries = 10) %>% 
+      roadside_railways <- roadside_infrastructure_all %>% 
         .$osm_lines %>% 
-        sf::st_as_sf() %>% 
-        sf::st_buffer(dist = road_width / 2)
+        {if(!is.null(.)) 
+          dplyr::filter(., landuse == "railway") %>% 
+            sf::st_buffer(dist = road_width / 2) 
+          else .}
       
       # combine features
-      
       roadside_infrastructure <- dplyr::bind_rows(roadside_buildings,
                                                   roadside_parkings,
                                                   roadside_railways) %>% 
@@ -881,7 +882,7 @@ getMIRENsites <- function(target_road  # road/trail
 
 # Run function for multiple roads/tracks ----
 glonomo_sites_snpp <- purrr::map(c(
-  "Flüela", 
+  "Flüela",
   "Ofenpass",
   "Umbrail"
 ), ~getMIRENsites(target_road = .x, 
