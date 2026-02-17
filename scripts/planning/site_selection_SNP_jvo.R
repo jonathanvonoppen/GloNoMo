@@ -674,10 +674,10 @@ getMIRENsites <- function(target_road  # road/trail
   
   if(length(sites_missing) > 0){
     ## print warning
-    warning(paste0("After applying spatial filters with current settings, no available plots remain at site(s) ", paste(sites_missing, collapse = ", "), "."))
+    warning(paste0(stringr::str_to_title(target_road), ": after applying spatial filters with current settings, no available plots remain at site(s) ", paste(sites_missing, collapse = ", "), "."))
     
     sites_missing <- tibble::tibble(plot_id = rep(sites_missing, each = 2),
-                                    side = c("left", "right"),
+                                    side = rep(c("left", "right"), times = length(sites_missing)),
                                     available = FALSE)
   }
   sites_lr_available <- perp_plots_bothsides_selection %>% 
@@ -702,34 +702,38 @@ getMIRENsites <- function(target_road  # road/trail
   
   ### ~ determine left-right sequence ----
   
+  # set order of sides, select final plots
+  order_select_sites <- function(start_side = start_side,
+                                 all_sites_lr = sites_lr_available,
+                                 candidate_plot_selection = perp_plots_bothsides_selection){
+    # get alternating sequence
+    sides_order <- rep(c(start_side,
+                         setdiff(c("left", "right"), start_side)),
+                       times = ceiling(n_sites/2))
+    # combine plots with sequence
+    target_sites_sides <- tibble::tibble(plot_id = all_sites_lr$plot_id,
+                                         target_side = sides_order)
+    # filter candidates selection for final sides to sample
+    sites_plot_selection <- candidate_plot_selection %>%
+      dplyr::select(plot_id, 
+                    elevation_m, 
+                    side,
+                    geometry) %>% 
+      dplyr::left_join(target_sites_sides
+                       , by = "plot_id") %>% 
+      dplyr::group_by(plot_id) %>% 
+      dplyr::filter(if(n() > 1) side == target_side else TRUE) %>%  # only filter for ideal side if both sides available at a side
+      dplyr::ungroup() %>% 
+      dplyr::select(-target_side)
+    return(sites_plot_selection)
+  }
+  
   ## if all left/right combinations available, pick random order
   all_available <- length(c(sites_wo_left, sites_wo_right)) == 0
   if(all_available){
     set.seed(35)
     start_side <- sample(c("left", "right"), 1)
-    # set order of sides, select final plots
-    order_select_sites <- function(start_side = start_side,
-                                   all_sites_lr = sites_lr_available,
-                                   candidate_plot_selection = perp_plots_bothsides_selection){
-      # get alternating sequence
-      sides_order <- rep(c(start_side,
-                           setdiff(c("left", "right"), start_side)),
-                         times = ceiling(n_sites/2))
-      # combine plots with sequence
-      target_sites_sides <- tibble::tibble(plot_id = all_sites_lr$plot_id,
-                                           target_side = sides_order)
-      # filter candidates selection for final sides to sample
-      sites_plot_selection <- candidate_plot_selection %>%
-        dplyr::select(plot_id, 
-                      elevation_m, 
-                      side,
-                      geometry) %>% 
-        dplyr::left_join(target_sites_sides
-                         , by = "plot_id") %>% 
-        dplyr::filter(side == target_side) %>% 
-        dplyr::select(-target_side)
-      return(sites_plot_selection)
-    }
+    
     target_sites_selection <- order_select_sites(start_side = start_side,
                                                  all_sites_lr = sites_lr_available,
                                                  candidate_plot_selection = perp_plots_bothsides_selection)
@@ -769,114 +773,108 @@ getMIRENsites <- function(target_road  # road/trail
     target_sites_selection <- order_select_sites(start_side = start_side,
                                                  all_sites_lr = sites_lr_available,
                                                  candidate_plot_selection = perp_plots_bothsides_selection)
-    
-    # get points at roadside
-    
-    find_roadside_point <- function(plot_polygon,  # plot polygon perpendicular to road
-                                    road_geom,  # road geometry
-                                    distance = 2  # distance from road centre in m
-                                    ) {
-    
-      # plot_polygon <- polygon_test_F %>% st_sf()
-      # distance <- 2
-      
-      # 1. Get polygon vertices
-      coords <- st_coordinates(st_cast(st_boundary(plot_polygon), "POINT", warn = FALSE))
-      coords <- coords[1:(nrow(coords)-1), ]  # Remove duplicate last point
-      
-      # 2. Find the longest edge (orientation of rectangle)
-      max_length <- 0
-      best_edge <- NULL
-      
-      for (i in 1:nrow(coords)) {
-        next_i <- ifelse(i == nrow(coords), 1, i + 1)
-        
-        edge_length <- sqrt((coords[next_i, "X"] - coords[i, "X"])^2 + 
-                              (coords[next_i, "Y"] - coords[i, "Y"])^2)
-        
-        if (edge_length > max_length) {
-          max_length <- edge_length
-          best_edge <- c(i, next_i)
-        }
-      }
-      
-      # 3. Calculate direction vector from longest edge
-      dx <- coords[best_edge[2], "X"] - coords[best_edge[1], "X"]
-      dy <- coords[best_edge[2], "Y"] - coords[best_edge[1], "Y"]
-      
-      # Normalize direction vector
-      length_edge <- sqrt(dx^2 + dy^2)
-      dx_norm <- dx / length_edge
-      dy_norm <- dy / length_edge
-      
-      # 4. Create centerline along this direction through polygon centroid
-      suppressWarnings({
-        centroid <- st_centroid(plot_polygon)
-      })
-      centroid_coords <- st_coordinates(centroid)
-      
-      # Extend centerline far in both directions
-      extension <- 500
-      
-      start_point <- c(centroid_coords[1, "X"] - dx_norm * extension,
-                       centroid_coords[1, "Y"] - dy_norm * extension)
-      end_point <- c(centroid_coords[1, "X"] + dx_norm * extension,
-                     centroid_coords[1, "Y"] + dy_norm * extension)
-      
-      centerline <- st_linestring(rbind(start_point, end_point))
-      centerline <- st_sfc(centerline, crs = st_crs(plot_polygon))
-      
-      # 5. Find intersection with road
-      int_point <- st_intersection(centerline, road_geom)
-      
-      if (length(int_point) == 0) {
-        stop("Centerline does not intersect the reference line")
-      }
-      
-      int_point <- st_cast(int_point, "POINT")[1]
-      int_coords <- st_coordinates(int_point)
-      
-      # 6. Determine correct direction (toward polygon centroid)
-      to_centroid_x <- centroid_coords[1, "X"] - int_coords[1, "X"]
-      to_centroid_y <- centroid_coords[1, "Y"] - int_coords[1, "Y"]
-      
-      # Check if direction vector points toward centroid
-      dot_product <- dx_norm * to_centroid_x + dy_norm * to_centroid_y
-
-      if (dot_product < 0) {
-        # Reverse direction
-        dx_norm <- -dx_norm
-        dy_norm <- -dy_norm
-      }
-      
-      # 7. Calculate target point at distance along centerline
-      target_x <- int_coords[1, "X"] + dx_norm * distance
-      target_y <- int_coords[1, "Y"] + dy_norm * distance
-      
-      target_point <- st_point(c(target_x, target_y))
-      target_point <- st_sfc(target_point, crs = st_crs(plot_polygon))
-      
-      return(target_point)
-    }
-    
-    target_plot_points <- target_sites_selection %>% 
-      dplyr::rowwise() %>% 
-      dplyr::mutate(geometry = find_roadside_point(geometry, 
-                                                   road_geom = road_geom, 
-                                                   distance = 3)) %>% 
-      dplyr::ungroup() %>% 
-      dplyr::select(plot_id, 
-                    elevation_m, 
-                    side, 
-                    geometry)
-    
-    # write shapefile
-    if(!dir.exists(output_dir)) dir.create(output_dir)
-    if(length(write_output) == 1 && write_output == TRUE | "points" %in% write_output){
-      sf::st_write(target_plot_points,
-                   dsn = file.path(output_dir, paste0("GloNoMo_MIREN_target_plot_points_", target_road, ".shp")))
-    }
   }
+  
+  
+  ## > Get points at roadside ----
+  
+  find_roadside_point <- function(plot_polygon,  # plot polygon perpendicular to road
+                                  road_geom,  # road geometry
+                                  distance = 2  # distance from road centre in m
+  ) {
+    
+    # plot_polygon <- polygon_test_F %>% st_sf()
+    # distance <- 2
+    
+    # 1. Get polygon vertices
+    coords <- st_coordinates(st_cast(st_boundary(plot_polygon), "POINT", warn = FALSE))
+    coords <- coords[1:(nrow(coords)-1), ]  # Remove duplicate last point
+    
+    # 2. Find the longest edge (orientation of rectangle)
+    max_length <- 0
+    best_edge <- NULL
+    
+    for (i in 1:nrow(coords)) {
+      next_i <- ifelse(i == nrow(coords), 1, i + 1)
+      
+      edge_length <- sqrt((coords[next_i, "X"] - coords[i, "X"])^2 + 
+                            (coords[next_i, "Y"] - coords[i, "Y"])^2)
+      
+      if (edge_length > max_length) {
+        max_length <- edge_length
+        best_edge <- c(i, next_i)
+      }
+    }
+    
+    # 3. Calculate direction vector from longest edge
+    dx <- coords[best_edge[2], "X"] - coords[best_edge[1], "X"]
+    dy <- coords[best_edge[2], "Y"] - coords[best_edge[1], "Y"]
+    
+    # Normalize direction vector
+    length_edge <- sqrt(dx^2 + dy^2)
+    dx_norm <- dx / length_edge
+    dy_norm <- dy / length_edge
+    
+    # 4. Create centerline along this direction through polygon centroid
+    suppressWarnings({
+      centroid <- st_centroid(plot_polygon)
+    })
+    centroid_coords <- st_coordinates(centroid)
+    
+    # Extend centerline far in both directions
+    extension <- 500
+    
+    start_point <- c(centroid_coords[1, "X"] - dx_norm * extension,
+                     centroid_coords[1, "Y"] - dy_norm * extension)
+    end_point <- c(centroid_coords[1, "X"] + dx_norm * extension,
+                   centroid_coords[1, "Y"] + dy_norm * extension)
+    
+    centerline <- st_linestring(rbind(start_point, end_point))
+    centerline <- st_sfc(centerline, crs = st_crs(plot_polygon))
+    
+    # 5. Find intersection with road
+    int_point <- st_intersection(centerline, road_geom)
+    
+    if (length(int_point) == 0) {
+      stop("Centerline does not intersect the reference line")
+    }
+    
+    int_point <- st_cast(int_point, "POINT")[1]
+    int_coords <- st_coordinates(int_point)
+    
+    # 6. Determine correct direction (toward polygon centroid)
+    to_centroid_x <- centroid_coords[1, "X"] - int_coords[1, "X"]
+    to_centroid_y <- centroid_coords[1, "Y"] - int_coords[1, "Y"]
+    
+    # Check if direction vector points toward centroid
+    dot_product <- dx_norm * to_centroid_x + dy_norm * to_centroid_y
+    
+    if (dot_product < 0) {
+      # Reverse direction
+      dx_norm <- -dx_norm
+      dy_norm <- -dy_norm
+    }
+    
+    # 7. Calculate target point at distance along centerline
+    target_x <- int_coords[1, "X"] + dx_norm * distance
+    target_y <- int_coords[1, "Y"] + dy_norm * distance
+    
+    target_point <- st_point(c(target_x, target_y))
+    target_point <- st_sfc(target_point, crs = st_crs(plot_polygon))
+    
+    return(target_point)
+  }
+  
+  target_plot_points <- target_sites_selection %>% 
+    dplyr::rowwise() %>% 
+    dplyr::mutate(geometry = find_roadside_point(geometry, 
+                                                 road_geom = road_geom, 
+                                                 distance = 3)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(plot_id, 
+                  elevation_m, 
+                  side, 
+                  geometry)
   
   ## > Obtain convex hull around all candidate plots within site ----
   site_hulls_candidate_plots <- perp_plots_bothsides_filtered %>% 
@@ -886,6 +884,20 @@ getMIRENsites <- function(target_road  # road/trail
                      , .groups = "drop") %>% 
     sf::st_convex_hull()
   
+  
+  ## > Write shapefiles ----
+  if(!dir.exists(output_dir)) dir.create(output_dir)
+  # polygons
+  if(length(write_output) == 1 && write_output == TRUE | "plots" %in% write_output | "polygons" %in% write_output){
+    sf::st_write(perp_plots_bothsides_filtered,
+                 dsn = file.path(output_dir, paste0("GloNoMo_MIREN_target_plot_polygons_", target_road, ".shp")))
+  }
+  # points
+  if(length(write_output) == 1 && write_output == TRUE | "points" %in% write_output){
+    sf::st_write(target_plot_points,
+                 dsn = file.path(output_dir, paste0("GloNoMo_MIREN_target_plot_points_", target_road, ".shp")))
+  }
+  # hulls
   if(length(write_output) == 1 && write_output == TRUE | "hulls" %in% write_output){
     sf::st_write(site_hulls_candidate_plots,
                  dsn = file.path(output_dir, paste0("GloNoMo_MIREN_potential_sampling_areas_", target_road, ".shp")))
@@ -898,7 +910,7 @@ getMIRENsites <- function(target_road  # road/trail
 
 # Run function for multiple roads/tracks ----
 glonomo_sites_snpp <- purrr::map(c(
-  "Flüela",
+  # "Flüela",
   "Ofenpass",
   "Umbrail"
 ), ~getMIRENsites(target_road = .x, 
