@@ -518,12 +518,44 @@ getMIRENsites <- function(target_road  # road/trail
       # print message
       cat(" -- > filtering based on water bodies ...\n")
       
-      # load water bodies from OSM
-      roadside_water <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom) %>% sf::st_transform("epsg:4326"),
-                                          key = "natural", value = c("water", "wetland")
-                                          , max_retries = 10) %>% 
+      # load water features from OSM
+      roadside_water_all <- queryOSMwithRetry_multiple(bbox = sf::st_bbox(road_geom %>% 
+                                                                            sf::st_buffer(plot_length)) %>% 
+                                                         sf::st_transform("epsg:4326"),
+                                                       query1 = c("natural", "water"),
+                                                       query2 = c("natural", "wetland"),
+                                                       query3 = c("waterway", "stream"),
+                                                       max_retries = 10) 
+      
+      # get lakes & wetlands 
+      roadside_lakes <- roadside_water_all %>% 
         .$osm_polygons %>% 
-        sf::st_as_sf() %>% 
+        dplyr::filter(natural == "water") %>% 
+        sf::st_as_sf()
+      
+      # get wetlands and add extra buffer
+      roadside_wetlands <- roadside_water_all %>% 
+        .$osm_polygons %>% 
+        {if(!is.null(.)) 
+          dplyr::filter(., natural == "wetland") %>% 
+            # add 10-m buffer
+            sf::st_buffer(dist = 10) %>% 
+            sf::st_as_sf()
+          else .}
+      
+      # get streams
+      roadside_streams <- roadside_water_all %>% 
+        .$osm_lines %>% 
+        {if(!is.null(.)) 
+          dplyr::filter(., waterway == "stream") %>% 
+            sf::st_buffer(dist = 2)  %>% 
+            sf::st_as_sf()
+          else .}
+      
+      # combine features
+      roadside_infrastructure <- dplyr::bind_rows(roadside_lakes,
+                                                  roadside_wetlands,
+                                                  roadside_streams) %>% 
         sf::st_transform(crs = "epsg:2056") %>% 
         sf::st_cast("MULTIPOLYGON")
       
