@@ -777,6 +777,7 @@ getMIRENsites <- function(target_road  # road/trail
     # filter candidates selection for final sides to sample
     sites_plot_selection <- candidate_plot_selection %>%
       dplyr::select(plot_id, 
+                    id, 
                     elevation_m, 
                     side,
                     geometry) %>% 
