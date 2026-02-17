@@ -174,6 +174,22 @@ getMIRENsites <- function(target_road  # road/trail
   # load geometry
   road_geom <- sf::read_sf(file.path(input_data_dir, paste0(target_road, "_road_osm_2056.shp")))
   
+  # for Ofenpass: cut off at pass longitude
+  if(target_road == "ofenpass"){
+    pass_coord_x <- c(10.2921855, 46.6397744) %>% 
+      sf::st_point() %>% 
+      sf::st_sfc(crs = "epsg:4326") %>% 
+      sf::st_transform("epsg:2056") %>% 
+      sf::st_coordinates() %>% 
+      .[,1]
+    pass_road_bbox <- sf::st_bbox(road_geom)
+    pass_road_bbox["xmax"] <- pass_coord_x
+    suppressWarnings({
+      road_geom <- road_geom %>% 
+        sf::st_crop(pass_road_bbox)
+    })
+  }
+  
   # add buffer to geometry
   road_geom_buffer <- road_geom %>% 
     sf::st_buffer(dist = plot_length
