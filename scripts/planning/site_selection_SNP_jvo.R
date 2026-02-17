@@ -559,9 +559,9 @@ getMIRENsites <- function(target_road  # road/trail
           else .}
       
       # combine features
-      roadside_infrastructure <- dplyr::bind_rows(roadside_lakes,
-                                                  roadside_wetlands,
-                                                  roadside_streams) %>% 
+      roadside_water <- dplyr::bind_rows(roadside_lakes,
+                                         roadside_wetlands,
+                                         roadside_streams) %>% 
         sf::st_transform(crs = "epsg:2056") %>% 
         sf::st_cast("MULTIPOLYGON")
       
