@@ -327,6 +327,15 @@ getMIRENsites <- function(target_road  # road/trail
     perp_dx <- -dy
     perp_dy <- dx
     
+    # Calculate 2D cross product to check if left and right are reversed
+    cross <- dx * perp_dy - dy * perp_dx
+    
+    # If cross product is negative, our "left" is actually right - flip it
+    if (cross < 0) {
+      perp_dx <- -perp_dx
+      perp_dy <- -perp_dy
+    }
+    
     # offset
     # Create LEFT perpendicular line (one direction only)
     left_end <- c(point_coord[1] + perp_dx * length, 
@@ -695,7 +704,7 @@ getMIRENsites <- function(target_road  # road/trail
   cat(" -- determining final set of plots ...\n")
 
   ### ~ remove disparate clusters ----
-  perp_plots_bothsides_selection <- perp_plots_bothsides_filtered %>% 
+  perp_plots_bothsides_disparate <- perp_plots_bothsides_filtered %>% 
     dplyr::group_by(plot_id) %>% 
     dplyr::mutate(centroid = sf::st_centroid(geometry),
                   centroid_first = dplyr::first(centroid)) %>% 
@@ -703,10 +712,12 @@ getMIRENsites <- function(target_road  # road/trail
     dplyr::mutate(dist_to_first = sf::st_distance(geometry, centroid_first
                                                   , by_element = TRUE),
                   dist_to_first = as.numeric(dist_to_first)) %>% 
-    dplyr::filter(dist_to_first <= 1000) %>% 
+    tidylog::filter(dist_to_first <= 1000) %>% 
     dplyr::select(-dplyr::starts_with("centroid"),
-                  -dist_to_first) %>% 
-  ### ~ pick closest to ideal elevation if several remain within a group ----
+                  -dist_to_first)
+  
+  ### ~ pick plot closest to ideal elevation if several remain within a group ----
+  perp_plots_bothsides_selection <- perp_plots_bothsides_disparate %>% 
     dplyr::left_join(site_elev %>% dplyr::select(plot_id,
                                                  elevation_ideal = elevation_m)
                      , by = "plot_id") %>% 
@@ -922,12 +933,13 @@ getMIRENsites <- function(target_road  # road/trail
                                                  distance = 3)) %>% 
     dplyr::ungroup() %>% 
     dplyr::select(plot_id, 
+                  id,
                   elevation_m, 
                   side, 
                   geometry)
   
   ## > Obtain convex hull around all candidate plots within site ----
-  site_hulls_candidate_plots <- perp_plots_bothsides_filtered %>% 
+  site_hulls_candidate_plots <- perp_plots_bothsides_disparate %>% 
     dplyr::group_by(plot_id) %>% 
     dplyr::summarise(geometry = sf::st_union(geometry),
                      n_plot_candidates = n()
@@ -950,11 +962,12 @@ getMIRENsites <- function(target_road  # road/trail
   # hulls
   if(length(write_output) == 1 && write_output == TRUE | "hulls" %in% write_output){
     sf::st_write(site_hulls_candidate_plots,
-                 dsn = file.path(output_dir, paste0("GloNoMo_MIREN_potential_sampling_areas_", target_road, ".shp")))
+                 dsn = file.path(output_dir, paste0("GloNoMo_MIREN_potential_sampling_areas_", target_road, "_revised.shp")))
   }
   
   ## > Return list of selected sites and candidate plots hull ----
-  return(list(priority_plots = target_sites_selection,
+  return(list(priority_plots = plot_points,
+              candidate_polygons = perp_plots_bothsides_filtered,
               site_hulls = site_hulls_candidate_plots))
 }
 
