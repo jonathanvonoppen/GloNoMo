@@ -65,10 +65,32 @@ ofenpass_road <- osmdata::opq("Ofenpass") %>%
   dplyr::filter(osm_id == 19043688) %>% 
   sf::st_transform(crs = "epsg:2056") %>% 
   select_if(~ !any(is.na(.)))
-sf::st_write(ofenpass_road, dsn = file.path(miren_planning_dir, "ofenpass_road_osm_2056.shp"))
+zernez_road <- osmdata::opq("Scheschna") %>% 
+  osmdata::add_osm_feature(key = "highway", value = "primary") %>% 
+  osmdata::osmdata_sf() %>% 
+  .$osm_lines %>% 
+  sf::st_as_sf() %>% 
+  dplyr::filter(osm_id %in% c(505666332, 38028750, 29011648, 695619048)) %>% 
+  sf::st_union() %>% 
+  sf::st_transform(crs = "epsg:2056")
+  # join
+ofenpass_road_complete <- sf::st_union(ofenpass_road,
+                                       zernez_road) 
+  # cut off Val Müstair part beyond pass longitude
+ofenpass_coord_x <- c(10.2921855, 46.6397744) %>% 
+  sf::st_point() %>% 
+  sf::st_sfc(crs = "epsg:4326") %>% 
+  sf::st_transform("epsg:2056") %>% 
+  sf::st_coordinates() %>% 
+  .[,1]
+ofenpass_road_bbox <- sf::st_bbox(ofenpass_road_complete)
+ofenpass_road_bbox["xmax"] <- ofenpass_coord_x
+ofenpass_road_complete_ascent <- ofenpass_road_complete %>% 
+  sf::st_crop(ofenpass_road_bbox)
+sf::st_write(ofenpass_road_complete_ascent, dsn = file.path(miren_planning_dir, "ofenpass_road_osm_2056.shp"))
 
 # Passstrasse Flüela
-fluela_road <- osmdata::opq("Flüelapass") %>% 
+flüela_road <- osmdata::opq("Flüelapass") %>% 
   osmdata::add_osm_feature(key = "destination", value = "mountain_pass") %>% 
   osmdata::osmdata_sf() %>% 
   .$osm_multilines %>% 
@@ -78,7 +100,7 @@ fluela_road <- osmdata::opq("Flüelapass") %>%
   sf::st_intersection(zernez_boundary) %>% 
   .[,1:10] %>%  # exclude fields added from zernez_boundary
   select_if(~ !any(is.na(.)))
-sf::st_write(fluela_road
+sf::st_write(flüela_road
              , dsn = file.path(miren_planning_dir, "flüela_road_osm_2056.shp")
              , layer_options = "SHPT=ARCZ")  # to enable saving 3D MULTILINESTRING: https://stackoverflow.com/q/74315261/17268298
 
@@ -173,22 +195,6 @@ getMIRENsites <- function(target_road  # road/trail
   
   # load geometry
   road_geom <- sf::read_sf(file.path(input_data_dir, paste0(target_road, "_road_osm_2056.shp")))
-  
-  # for Ofenpass: cut off at pass longitude
-  if(target_road == "ofenpass"){
-    pass_coord_x <- c(10.2921855, 46.6397744) %>% 
-      sf::st_point() %>% 
-      sf::st_sfc(crs = "epsg:4326") %>% 
-      sf::st_transform("epsg:2056") %>% 
-      sf::st_coordinates() %>% 
-      .[,1]
-    pass_road_bbox <- sf::st_bbox(road_geom)
-    pass_road_bbox["xmax"] <- pass_coord_x
-    suppressWarnings({
-      road_geom <- road_geom %>% 
-        sf::st_crop(pass_road_bbox)
-    })
-  }
   
   # add buffer to geometry
   road_geom_buffer <- road_geom %>% 
@@ -669,7 +675,8 @@ getMIRENsites <- function(target_road  # road/trail
   ### ~ plot not overlapping with larger water bodies ----
                                checkWater = check_water_overlap,
   ### ~ plot not overlapping with infrastructure ----
-                               checkInfrastructure = check_infrastructure_overlap)
+                               checkInfrastructure = check_infrastructure_overlap) %>% 
+    dplyr::arrange(plot_id)
   
             #   
             #           # perp_plots_bothsides_filtered %>% 
@@ -686,9 +693,20 @@ getMIRENsites <- function(target_road  # road/trail
   ## > Select final plots ----
   
   cat(" -- determining final set of plots ...\n")
-  
-  ### ~ pick closest to ideal elevation if several remain within a group ----
+
+  ### ~ remove disparate clusters ----
   perp_plots_bothsides_selection <- perp_plots_bothsides_filtered %>% 
+    dplyr::group_by(plot_id) %>% 
+    dplyr::mutate(centroid = sf::st_centroid(geometry),
+                  centroid_first = dplyr::first(centroid)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::mutate(dist_to_first = sf::st_distance(geometry, centroid_first
+                                                  , by_element = TRUE),
+                  dist_to_first = as.numeric(dist_to_first)) %>% 
+    dplyr::filter(dist_to_first <= 1000) %>% 
+    dplyr::select(-dplyr::starts_with("centroid"),
+                  -dist_to_first) %>% 
+  ### ~ pick closest to ideal elevation if several remain within a group ----
     dplyr::left_join(site_elev %>% dplyr::select(plot_id,
                                                  elevation_ideal = elevation_m)
                      , by = "plot_id") %>% 
@@ -955,6 +973,6 @@ glonomo_sites_snpp <- purrr::map(c(
                   site_elevations_file = "Site_setup.xlsx", 
                   spatial_objects_filter = c("slope", "road", "water", "infrastructure"),
                   output_dir = file.path(miren_planning_dir, "output_target_sites", .x),
-                  write_output = c("points", "hulls")
+                  write_output = c("points", "polygons", "hulls")
 )
 )
