@@ -54,7 +54,7 @@ umbrail_road <- osmdata::opq("Umbrail-Passstrasse") %>%
   dplyr::filter(osm_id == 2726972) %>% 
   sf::st_transform(crs = "epsg:2056") %>% 
   select_if(~ !any(is.na(.)))
-sf::st_write(umbrail_road, dsn = file.path(miren_planning_dir, "umbrail_road_osm_2056.shp"))
+sf::st_write(umbrail_road, dsn = file.path(miren_planning_dir, "input_data", "umbrail_road_osm_2056.shp"))
 
 # Ofenpassstrasse
 ofenpass_road <- osmdata::opq("Ofenpass") %>% 
@@ -70,7 +70,7 @@ zernez_road <- osmdata::opq("Scheschna") %>%
   osmdata::osmdata_sf() %>% 
   .$osm_lines %>% 
   sf::st_as_sf() %>% 
-  dplyr::filter(osm_id %in% c(505666332, 38028750, 29011648, 695619048)) %>% 
+  dplyr::filter(osm_id %in% c(1305648772, 505666332, 38028750, 1277655924, 29011648, 695619048)) %>% 
   sf::st_union() %>% 
   sf::st_transform(crs = "epsg:2056")
   # join
@@ -87,7 +87,7 @@ ofenpass_road_bbox <- sf::st_bbox(ofenpass_road_complete)
 ofenpass_road_bbox["xmax"] <- ofenpass_coord_x
 ofenpass_road_complete_ascent <- ofenpass_road_complete %>% 
   sf::st_crop(ofenpass_road_bbox)
-sf::st_write(ofenpass_road_complete_ascent, dsn = file.path(miren_planning_dir, "ofenpass_road_osm_2056.shp"))
+sf::st_write(ofenpass_road_complete_ascent, dsn = file.path(miren_planning_dir, "input_data", "ofenpass_road_osm_2056.shp"))
 
 # Passstrasse Flüela
 flüela_road <- osmdata::opq("Flüelapass") %>% 
@@ -101,7 +101,7 @@ flüela_road <- osmdata::opq("Flüelapass") %>%
   .[,1:10] %>%  # exclude fields added from zernez_boundary
   select_if(~ !any(is.na(.)))
 sf::st_write(flüela_road
-             , dsn = file.path(miren_planning_dir, "flüela_road_osm_2056.shp")
+             , dsn = file.path(miren_planning_dir, "input_data", "flüela_road_osm_2056.shp")
              , layer_options = "SHPT=ARCZ")  # to enable saving 3D MULTILINESTRING: https://stackoverflow.com/q/74315261/17268298
 
 
