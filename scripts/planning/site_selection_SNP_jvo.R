@@ -20,6 +20,7 @@ source(file.path("P:", "common", "scripts", "EcologyGroup_functions_library.R"))
 
 data_dir <- file.path("data")
 miren_planning_dir <- file.path(data_dir, "fieldwork_planning", "MIREN_sites_SNP+")
+input_data_dir <- file.path(miren_planning_dir, "input_data")
 
 
 # [1] Load data ----
@@ -54,7 +55,18 @@ umbrail_road <- osmdata::opq("Umbrail-Passstrasse") %>%
   dplyr::filter(osm_id == 2726972) %>% 
   sf::st_transform(crs = "epsg:2056") %>% 
   select_if(~ !any(is.na(.)))
-sf::st_write(umbrail_road, dsn = file.path(miren_planning_dir, "input_data", "umbrail_road_osm_2056.shp"))
+stelvio_road <- osmdata::opq(sf::st_bbox(c(xmin = 10.432849, ymin = 46.528605, xmax = 10.453202, ymax = 46.539934), crs = "epsg:4326")) %>% 
+  osmdata::add_osm_feature(key = "highway", value = "secondary") %>% 
+  osmdata::osmdata_sf() %>% 
+  .$osm_lines %>% 
+  sf::st_as_sf() %>% 
+  dplyr::filter(osm_id %in% c(1429965884, 238798011, 238798015, 434566256, 172951992, 73261783, 184815465, 537938655, 406043336)) %>% 
+  sf::st_union() %>% 
+  sf::st_transform(crs = "epsg:2056")
+  # join
+umbrail_stelvio_road_complete <- sf::st_union(umbrail_road,
+                                              stelvio_road)
+sf::st_write(umbrail_road, dsn = file.path(miren_planning_dir, "input_data", "umbrail_stelvio_road_osm_2056.shp"))
 
 # Ofenpassstrasse
 ofenpass_road <- osmdata::opq("Ofenpass") %>% 
@@ -108,10 +120,12 @@ sf::st_write(flüela_road
 ## > swisstopo DEM ----
 
 # downloading function
-download_road_dem <- function(target_road){
-  download_links <- readr::read_lines(list.files(miren_planning_dir, pattern = paste0(target_road, "_road_ch.swisstopo.swissalti3d.*.csv")
+download_road_dem <- function(target_road, 
+                              dem_dir = input_data_dir){
+  # download links obtained from https://www.swisstopo.admin.ch/en/height-model-swissalti3d#swissALTI3D---Download
+  download_links <- readr::read_lines(list.files(dem_dir, pattern = paste0(target_road, "_road_ch.swisstopo.swissalti3d.*.csv")
                                                  , full.names = T))
-  dem_outfile <- file.path(miren_planning_dir, paste0(target_road, "_road_dem_swissALTI3D_0.5m_2056.tif"))
+  dem_outfile <- file.path(dem_dir, paste0(target_road, "_road_dem_swissALTI3D_0.5m_2056.tif"))
   if(!file.exists(dem_outfile)){
     # print message
     cat(paste0("Downloading ", stringr::str_to_title(target_road), " road DEM ...\n"))
@@ -137,25 +151,25 @@ download_road_dem <- function(target_road){
 }
 
 # get DEMs
-target_roads <- c("flüela", "ofenpass", "umbrail")
+target_roads <- c("flüela", "ofenpass", "umbrail_stelvio")
 purrr::map_chr(target_roads, download_road_dem)
 
 flüela_dem <- terra::rast(file.path(miren_planning_dir, "flüela_road_dem_swissALTI3D_0.5m_2056.tif"))
 ofenpass_dem <- terra::rast(file.path(miren_planning_dir, "ofenpass_road_dem_swissALTI3D_0.5m_2056.tif"))
-umbrail_dem <- terra::rast(file.path(miren_planning_dir, "umbrail_road_dem_swissALTI3D_0.5m_2056.tif"))
+umbrail_dem <- terra::rast(file.path(miren_planning_dir, "umbrail_stelvio_road_dem_swissALTI3D_0.5m_2056.tif"))
 
 
-## > plot target elevations ----
-plot_elevs <- readxl::read_excel(file.path(miren_planning_dir, "Site_setup.xlsx")) %>% 
-  dplyr::rename("plot_id" = 1) %>% 
-  tidyr::pivot_longer(cols = -plot_id
-                      , names_to = "road"
-                      , values_to = "elevation") %>% 
-  dplyr::mutate(road = dplyr::recode_values(road,
-                                            "Ofenpass" ~ "ofenpass",
-                                            "Stilfserjoch" ~ "umbrail",
-                                            "Flüelapass" ~ "flüela")) %>% 
-  dplyr::arrange(road)
+# ## > plot target elevations ----
+# plot_elevs <- readxl::read_excel(file.path(miren_planning_dir, "Site_setup.xlsx")) %>% 
+#   dplyr::rename("plot_id" = 1) %>% 
+#   tidyr::pivot_longer(cols = -plot_id
+#                       , names_to = "road"
+#                       , values_to = "elevation") %>% 
+#   dplyr::mutate(road = dplyr::recode_values(road,
+#                                             "Ofenpass" ~ "ofenpass",
+#                                             "Stilfserjoch" ~ "umbrail",
+#                                             "Flüelapass" ~ "flüela")) %>% 
+#   dplyr::arrange(road)
 
 
 # [2] Derive potential sampling zones/sites ----
@@ -967,7 +981,7 @@ getMIRENsites <- function(target_road  # road/trail
   }
   
   ## > Return list of selected sites and candidate plots hull ----
-  return(list(priority_plots = plot_points,
+  return(list(priority_plots = target_plot_points,
               candidate_polygons = perp_plots_bothsides_filtered,
               site_hulls = site_hulls_candidate_plots))
 }
@@ -975,13 +989,13 @@ getMIRENsites <- function(target_road  # road/trail
 # Run function for multiple roads/tracks ----
 glonomo_sites_snpp <- purrr::map(c(
   # "Flüela",
-  "Ofenpass",
-  "Umbrail"
+  # "Ofenpass",
+  "Umbrail_Stelvio"
 ), ~getMIRENsites(target_road = .x, 
                   plot_width = 2, plot_length = 105, 
                   resolution = 1, 
                   slope_mask_res = 4, 
-                  slope_threshold_value = 35,
+                  slope_threshold_value = 30,
                   site_elev_dist_threshold = 10, 
                   input_data_dir = file.path(miren_planning_dir, "input_data"),
                   site_elevations_file = "Site_setup.xlsx", 
