@@ -66,7 +66,7 @@ stelvio_road <- osmdata::opq(sf::st_bbox(c(xmin = 10.432849, ymin = 46.528605, x
   # join
 umbrail_stelvio_road_complete <- sf::st_union(umbrail_road,
                                               stelvio_road)
-sf::st_write(umbrail_road, dsn = file.path(miren_planning_dir, "input_data", "umbrail_stelvio_road_osm_2056.shp"))
+sf::st_write(umbrail_stelvio_road_complete, dsn = file.path(input_data_dir, "umbrail_stelvio_road_osm_2056.shp"))
 
 # Ofenpassstrasse
 ofenpass_road <- osmdata::opq("Ofenpass") %>% 
@@ -99,7 +99,7 @@ ofenpass_road_bbox <- sf::st_bbox(ofenpass_road_complete)
 ofenpass_road_bbox["xmax"] <- ofenpass_coord_x
 ofenpass_road_complete_ascent <- ofenpass_road_complete %>% 
   sf::st_crop(ofenpass_road_bbox)
-sf::st_write(ofenpass_road_complete_ascent, dsn = file.path(miren_planning_dir, "input_data", "ofenpass_road_osm_2056.shp"))
+sf::st_write(ofenpass_road_complete_ascent, dsn = file.path(input_data_dir, "ofenpass_road_osm_2056.shp"))
 
 # Passstrasse Flüela
 flüela_road <- osmdata::opq("Flüelapass") %>% 
@@ -113,7 +113,7 @@ flüela_road <- osmdata::opq("Flüelapass") %>%
   .[,1:10] %>%  # exclude fields added from zernez_boundary
   select_if(~ !any(is.na(.)))
 sf::st_write(flüela_road
-             , dsn = file.path(miren_planning_dir, "input_data", "flüela_road_osm_2056.shp")
+             , dsn = file.path(input_data_dir, "flüela_road_osm_2056.shp")
              , layer_options = "SHPT=ARCZ")  # to enable saving 3D MULTILINESTRING: https://stackoverflow.com/q/74315261/17268298
 
 
@@ -547,37 +547,40 @@ getMIRENsites <- function(target_road  # road/trail
       # print message
       cat(" -- > filtering based on water bodies ...\n")
       
-      # load water features from OSM
-      roadside_water_all <- queryOSMwithRetry_multiple(bbox = sf::st_bbox(road_geom %>% 
-                                                                            sf::st_buffer(plot_length)) %>% 
-                                                         sf::st_transform("epsg:4326"),
-                                                       query1 = c("natural", "water"),
-                                                       query2 = c("natural", "wetland"),
-                                                       query3 = c("waterway", "stream"),
-                                                       max_retries = 10) 
-      
       # get lakes & wetlands 
-      roadside_lakes <- roadside_water_all %>% 
+      roadside_lakes <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
+                                                               sf::st_buffer(plot_length)) %>% 
+                                            sf::st_transform("epsg:4326"),
+                                          key = "natural", 
+                                          value = "water",
+                                          max_retries = 10) %>% 
         .$osm_polygons %>% 
-        dplyr::filter(natural == "water") %>% 
         sf::st_as_sf()
       
       # get wetlands and add extra buffer
-      roadside_wetlands <- roadside_water_all %>% 
+      roadside_wetlands <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
+                                                                  sf::st_buffer(plot_length)) %>% 
+                                               sf::st_transform("epsg:4326"),
+                                             key = "natural", 
+                                             value = "wetland",
+                                             max_retries = 10) %>% 
         .$osm_polygons %>% 
         {if(!is.null(.)) 
-          dplyr::filter(., natural == "wetland") %>% 
-            # add 10-m buffer
-            sf::st_buffer(dist = 10) %>% 
+          # add 10-m buffer
+          sf::st_buffer(., dist = 10) %>% 
             sf::st_as_sf()
           else .}
       
       # get streams
-      roadside_streams <- roadside_water_all %>% 
+      roadside_streams <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
+                                                                 sf::st_buffer(plot_length)) %>% 
+                                              sf::st_transform("epsg:4326"),
+                                            key = "waterway", 
+                                            value = "stream",
+                                            max_retries = 10) %>% 
         .$osm_lines %>% 
         {if(!is.null(.)) 
-          dplyr::filter(., waterway == "stream") %>% 
-            sf::st_buffer(dist = 2)  %>% 
+          sf::st_buffer(., dist = 2)  %>% 
             sf::st_as_sf()
           else .}
       
@@ -613,37 +616,40 @@ getMIRENsites <- function(target_road  # road/trail
       # print message
       cat(" -- > filtering based on infrastructure ...\n")
       
-      # load OSM data
-      roadside_infrastructure_all <- queryOSMwithRetry_multiple(bbox = sf::st_bbox(road_geom %>% 
-                                                                                     sf::st_buffer(plot_length)) %>% 
-                                                                  sf::st_transform("epsg:4326"),
-                                                                query1 = c("building", "yes"),
-                                                                query2 = c("amenity", "parking"),
-                                                                query3 = c("landuse", "railway"),
-                                                                max_retries = 10) 
-      
       # get buildings 
-      roadside_buildings <- roadside_infrastructure_all %>% 
+      roadside_buildings <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
+                                                                   sf::st_buffer(plot_length)) %>% 
+                                                sf::st_transform("epsg:4326"),
+                                              key = "building", 
+                                              value = "yes",
+                                              max_retries = 10) %>% 
         .$osm_polygons %>% 
-        dplyr::filter(building == "yes") %>% 
         sf::st_as_sf()
       
       # load parkings from OSM
-      roadside_parkings <- roadside_infrastructure_all %>% 
+      roadside_parkings <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
+                                                                  sf::st_buffer(plot_length)) %>% 
+                                               sf::st_transform("epsg:4326"),
+                                             key = "building", 
+                                             value = "yes",
+                                             max_retries = 10) %>% 
         .$osm_polygons %>% 
         {if(!is.null(.)) 
-          dplyr::filter(., amenity == "parking") %>% 
-            dplyr::mutate(area = sf::st_area(geometry)) %>% 
+          dplyr::mutate(., area = sf::st_area(geometry)) %>% 
             # exclude small parkings < 250 m2
             dplyr::filter(as.numeric(area) > 250)
           else .}
       
       # load railways from OSM
-      roadside_railways <- roadside_infrastructure_all %>% 
+      roadside_railways <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
+                                                                  sf::st_buffer(plot_length)) %>% 
+                                               sf::st_transform("epsg:4326"),
+                                             key = "landuse", 
+                                             value = "railway",
+                                             max_retries = 10) %>% 
         .$osm_lines %>% 
         {if(!is.null(.)) 
-          dplyr::filter(., landuse == "railway") %>% 
-            sf::st_buffer(dist = road_width / 2) 
+          sf::st_buffer(., dist = road_width / 2) 
           else .}
       
       # combine features
