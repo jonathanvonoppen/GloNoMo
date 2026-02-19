@@ -636,8 +636,8 @@ getMIRENsites <- function(target_road  # road/trail
         .$osm_polygons %>% 
         {if(!is.null(.)) 
           dplyr::mutate(., area = sf::st_area(geometry)) %>% 
-            # exclude small parkings < 250 m2
-            dplyr::filter(as.numeric(area) > 250)
+            # exclude small parkings < 100 m2
+            dplyr::filter(as.numeric(area) > 100)
           else .}
       
       # load railways from OSM
