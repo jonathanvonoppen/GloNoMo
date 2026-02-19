@@ -904,7 +904,7 @@ getMIRENsites <- function(target_road  # road/trail
     centroid_coords <- st_coordinates(centroid)
     
     # Extend centerline far in both directions
-    extension <- 500
+    extension <- max_length * 10
     
     start_point <- c(centroid_coords[1, "X"] - dx_norm * extension,
                      centroid_coords[1, "Y"] - dy_norm * extension)
@@ -915,14 +915,24 @@ getMIRENsites <- function(target_road  # road/trail
     centerline <- st_sfc(centerline, crs = st_crs(plot_polygon))
     
     # 5. Find intersection with road
-    int_point <- st_intersection(centerline, road_geom)
+    int_point <- st_intersection(centerline, road_geom) %>% 
+      sf::st_cast("POINT") %>% 
+      sf::st_sf()
     
-    if (length(int_point) == 0) {
-      stop("Centerline does not intersect the reference line")
+    if (nrow(int_point) == 0) {
+      stop("Centerline does not intersect the reference line")  # throw error
+    } else if (nrow(int_point) == 1){
+      int_point_closest <- int_point  # define only intersection point as closest
+    } else if (nrow(int_point) > 1) {
+      int_point_closest <- int_point %>% 
+        # calculate distance to centroid
+        dplyr::mutate(dist_centroid = sf::st_distance(geometry, centroid),
+                      dist_centroid = as.numeric(dist_centroid)) %>% 
+        # filter for closest intersection
+        dplyr::slice_min(dist_centroid, n = 1)
     }
     
-    int_point <- st_cast(int_point, "POINT")[1]
-    int_coords <- st_coordinates(int_point)
+    int_coords <- st_coordinates(int_point_closest)
     
     # 6. Determine correct direction (toward polygon centroid)
     to_centroid_x <- centroid_coords[1, "X"] - int_coords[1, "X"]
