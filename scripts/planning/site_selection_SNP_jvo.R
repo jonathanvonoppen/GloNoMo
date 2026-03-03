@@ -3,7 +3,7 @@
 # Fieldwork preparation: site selection
 
 # script by Jonathan von Oppen  //  jonathan.vonoppen@unibas.ch
-# last updated 09 Feb 2026
+# last updated 19 Feb 2026
 
 
 # [0] Dependencies ----
