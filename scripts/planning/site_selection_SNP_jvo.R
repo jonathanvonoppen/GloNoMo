@@ -102,7 +102,8 @@ ofenpass_road_complete_ascent <- ofenpass_road_complete %>%
 sf::st_write(ofenpass_road_complete_ascent, dsn = file.path(input_data_dir, "ofenpass_road_osm_2056.shp"))
 
 # Passstrasse Flüela
-flüela_road <- osmdata::opq("Flüelapass") %>% 
+# Eastern side (Engadin)
+flüela_e_road <- osmdata::opq("Flüelapass") %>% 
   osmdata::add_osm_feature(key = "destination", value = "mountain_pass") %>% 
   osmdata::osmdata_sf() %>% 
   .$osm_multilines %>% 
@@ -112,8 +113,22 @@ flüela_road <- osmdata::opq("Flüelapass") %>%
   sf::st_intersection(zernez_boundary) %>% 
   .[,1:10] %>%  # exclude fields added from zernez_boundary
   select_if(~ !any(is.na(.)))
-sf::st_write(flüela_road
-             , dsn = file.path(input_data_dir, "flüela_road_osm_2056.shp")
+sf::st_write(flüela_e_road
+             , dsn = file.path(input_data_dir, "flüela_e_road_osm_2056.shp")
+             , layer_options = "SHPT=ARCZ")  # to enable saving 3D MULTILINESTRING: https://stackoverflow.com/q/74315261/17268298
+# Western side (Davos)
+flüela_w_road <- osmdata::opq("Flüelapass") %>% 
+  osmdata::add_osm_feature(key = "destination", value = "mountain_pass") %>% 
+  osmdata::osmdata_sf() %>% 
+  .$osm_multilines %>% 
+  sf::st_as_sf() %>% 
+  dplyr::filter(osm_id == 19043623) %>% 
+  sf::st_transform(crs = "epsg:2056") %>% 
+  sf::st_difference(zernez_boundary %>% sf::st_buffer(-150)) %>% 
+  .[,1:10] %>%  # exclude fields added from zernez_boundary
+  select_if(~ !any(is.na(.)))
+sf::st_write(flüela_w_road
+             , dsn = file.path(input_data_dir, "flüela_w_road_osm_2056.shp")
              , layer_options = "SHPT=ARCZ")  # to enable saving 3D MULTILINESTRING: https://stackoverflow.com/q/74315261/17268298
 
 
@@ -151,12 +166,12 @@ download_road_dem <- function(target_road,
 }
 
 # get DEMs
-target_roads <- c("flüela", "ofenpass", "umbrail_stelvio")
+target_roads <- c("flüela_w", "ofenpass", "umbrail_stelvio")
 purrr::map_chr(target_roads, download_road_dem)
 
-flüela_dem <- terra::rast(file.path(miren_planning_dir, "flüela_road_dem_swissALTI3D_0.5m_2056.tif"))
-ofenpass_dem <- terra::rast(file.path(miren_planning_dir, "ofenpass_road_dem_swissALTI3D_0.5m_2056.tif"))
-umbrail_dem <- terra::rast(file.path(miren_planning_dir, "umbrail_stelvio_road_dem_swissALTI3D_0.5m_2056.tif"))
+flüela_w_dem <- terra::rast(file.path(input_data_dir, "flüela_w_road_dem_swissALTI3D_0.5m_2056.tif"))
+ofenpass_dem <- terra::rast(file.path(input_data_dir, "ofenpass_road_dem_swissALTI3D_0.5m_2056.tif"))
+umbrail_dem <- terra::rast(file.path(input_data_dir, "umbrail_stelvio_road_dem_swissALTI3D_0.5m_2056.tif"))
 
 
 # ## > plot target elevations ----
