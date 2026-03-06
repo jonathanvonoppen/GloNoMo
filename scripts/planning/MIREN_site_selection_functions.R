@@ -128,6 +128,7 @@ create_perpendicular_plots <- function(line_geom,
   #> returns filtered subset of input data
 
 filter_perpendicular_plots <- function(plots_sf,
+                                       plot_length = plot_length,
                                        checkTerrain = TRUE,
                                        terrain_rast,
                                        conservative = FALSE,  # whether or not to consider adjacent cells, i.e. terra::extract(touches = TRUE)
