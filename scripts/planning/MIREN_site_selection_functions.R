@@ -128,7 +128,7 @@ create_perpendicular_plots <- function(line_geom,
   #> returns filtered subset of input data
 
 filter_perpendicular_plots <- function(plots_sf,
-                                       plot_length = plot_length,
+                                       plot_length_pp = plot_length,
                                        checkTerrain = TRUE,
                                        terrain_rast,
                                        conservative = FALSE,  # whether or not to consider adjacent cells, i.e. terra::extract(touches = TRUE)
@@ -185,7 +185,7 @@ filter_perpendicular_plots <- function(plots_sf,
     
     # get lakes & wetlands 
     roadside_lakes <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
-                                                             sf::st_buffer(plot_length)) %>% 
+                                                             sf::st_buffer(plot_length_pp)) %>% 
                                           sf::st_transform("epsg:4326"),
                                         key = "natural", 
                                         value = "water",
@@ -195,7 +195,7 @@ filter_perpendicular_plots <- function(plots_sf,
     
     # get wetlands and add extra buffer
     roadside_wetlands <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
-                                                                sf::st_buffer(plot_length)) %>% 
+                                                                sf::st_buffer(plot_length_pp)) %>% 
                                              sf::st_transform("epsg:4326"),
                                            key = "natural", 
                                            value = "wetland",
@@ -209,7 +209,7 @@ filter_perpendicular_plots <- function(plots_sf,
     
     # get streams
     roadside_streams <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
-                                                               sf::st_buffer(plot_length)) %>% 
+                                                               sf::st_buffer(plot_length_pp)) %>% 
                                             sf::st_transform("epsg:4326"),
                                           key = "waterway", 
                                           value = "stream",
@@ -246,7 +246,7 @@ filter_perpendicular_plots <- function(plots_sf,
     
     # get buildings 
     roadside_buildings <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
-                                                                 sf::st_buffer(plot_length)) %>% 
+                                                                 sf::st_buffer(plot_length_pp)) %>% 
                                               sf::st_transform("epsg:4326"),
                                             key = "building", 
                                             value = "yes",
@@ -256,7 +256,7 @@ filter_perpendicular_plots <- function(plots_sf,
     
     # load parkings from OSM
     roadside_parkings <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
-                                                                sf::st_buffer(plot_length)) %>% 
+                                                                sf::st_buffer(plot_length_pp)) %>% 
                                              sf::st_transform("epsg:4326"),
                                            key = "building", 
                                            value = "yes",
@@ -270,7 +270,7 @@ filter_perpendicular_plots <- function(plots_sf,
     
     # load railways from OSM
     roadside_railways <- queryOSMwithRetry(bbox = sf::st_bbox(road_geom %>% 
-                                                                sf::st_buffer(plot_length)) %>% 
+                                                                sf::st_buffer(plot_length_pp)) %>% 
                                              sf::st_transform("epsg:4326"),
                                            key = "landuse", 
                                            value = "railway",
@@ -393,13 +393,14 @@ check_intersect_polygons <- function(plot_polygon,
 
 
 # Set order of sides, select final plots ----
-order_select_sites <- function(start_side = start_side,
+order_select_sites <- function(start_side_lr = start_side,
                                all_sites_lr = sites_lr_available,
+                               times_lr = ceiling(n_sites/2),
                                candidate_plot_selection = perp_plots_bothsides_selection){
   # get alternating sequence
-  sides_order <- rep(c(start_side,
-                       setdiff(c("left", "right"), start_side)),
-                     times = ceiling(n_sites/2))
+  sides_order <- rep(c(start_side_lr,
+                       setdiff(c("left", "right"), start_side_lr)),
+                     times = times_lr)
   # combine plots with sequence
   target_sites_sides <- tibble::tibble(plot_id = all_sites_lr$plot_id,
                                        target_side = sides_order)
@@ -606,7 +607,43 @@ getMIRENsites <- function(target_road  # road/trail
   }
   
   
-  ## > Limit road vector to ideal site elevation +- max elevation distance ----
+  ## > Mask DEM (slope, road) ----
+  
+  cat(" -- masking steep slopes ...\n")
+  
+  # calculate steep slope mask
+  slope_masking_thresh <- matrix(c(-Inf, slope_threshold_value, 1,
+                                   slope_threshold_value, Inf, NA)
+                                 , ncol = 3
+                                 , byrow = T)
+  
+  # create mask
+  slope_mask_agg_factor <- (slope_mask_res %/% dem_res) %>% unique()
+  road_dem_slopemask <- road_dem %>% 
+    terra::aggregate(fact = slope_mask_agg_factor, # aggregate to coarser resolution for slope calculation
+                     fun = "mean") %>% 
+    terra::terrain(v = "slope"
+                   , unit = "degrees") %>% 
+    terra::classify(slope_masking_thresh)
+  
+  
+  ## > Create high-res segmentised version of road line ----
+  road_geom_highres <- road_geom %>% 
+    sf::st_segmentize(dfMaxLength = resolution)
+  
+  # get road as vertices
+  road_vertices <- road_geom_highres %>% 
+    sf::st_cast("POINT", warn = FALSE)
+  
+  # get elevation along road
+  road_elev <- road_dem %>% 
+    terra::extract(road_vertices, ID = FALSE)
+  
+  # add as road_geom attribute  
+  road_vertices$elevation_m <- road_elev$elevation_m
+  
+  
+  ## > Limit road points to ideal site elevation +- max elevation distance ----
   if(stringr::str_ends(site_elevations_file, ".xlsx")) read_fun <- readxl::read_excel
   if(stringr::str_ends(site_elevations_file, ".csv")) read_fun <- readr::read_csv
   
@@ -654,21 +691,6 @@ getMIRENsites <- function(target_road  # road/trail
     #                           , byrow = FALSE) %>% 
     #   rbind(matrix(c())) # add masked elevation zones?
     
-    # create high-res segmentised version of road line
-    road_geom_highres <- road_geom %>% 
-      sf::st_segmentize(dfMaxLength = resolution)
-    
-    # get road as vertices
-    road_vertices <- road_geom_highres %>% 
-      sf::st_cast("POINT", warn = FALSE)
-    
-    # get elevation along road
-    road_elev <- road_dem %>% 
-      terra::extract(road_vertices, ID = FALSE)
-    
-    # add as road_geom attribute  
-    road_vertices$elevation_m <- road_elev$elevation_m
-    
     # filter road_geom for eligible elevation intervals 
     road_vertices_zones_strict <- road_vertices %>% 
       dplyr::filter(
@@ -684,8 +706,8 @@ getMIRENsites <- function(target_road  # road/trail
                                            , site_elev$elev_threshold_low
                                            , rightmost.closed = TRUE),
                     plot_id = as.numeric(plot_id)) %>% 
-      # if any sites missing, re-run filter only for those sites
-      {if(length(sites_missing) > 0) dplyr::filter(., plot_id %in% sites_missing) else .}
+      # if re-running filtering loop for missing sites, filter only for those sites
+      {if(add_elev_dist != 0) dplyr::filter(., plot_id %in% sites_missing) else .}
     
     ## > Create perpendicular lines at vertices ----
     
@@ -720,30 +742,6 @@ getMIRENsites <- function(target_road  # road/trail
     perp_plots_bothsides_sf <- bind_rows(perp_plots_left_sf, perp_plots_right_sf)
     
     
-    ## > Mask DEM (slope, road) ----
-    
-    cat(" -- masking steep slopes ...\n")
-    
-    # calculate steep slope mask
-    slope_masking_thresh <- matrix(c(-Inf, slope_threshold_value, 1,
-                                     slope_threshold_value, Inf, NA)
-                                   , ncol = 3
-                                   , byrow = T)
-    
-    # create mask
-    slope_mask_agg_factor <- (slope_mask_res %/% dem_res) %>% unique()
-    road_dem_slopemask <- road_dem %>% 
-      terra::aggregate(fact = slope_mask_agg_factor, # aggregate to coarser resolution for slope calculation
-                       fun = "mean") %>% 
-      terra::terrain(v = "slope"
-                     , unit = "degrees") %>% 
-      terra::classify(slope_masking_thresh)
-    
-    # # mask DEM
-    # road_dem_masked <- road_dem %>% 
-    #   terra::mask(road_dem_slopemask)
-    
-    
     ## > Filter vertices ----
     
     cat(" -- filtering potential plots ...\n")
@@ -756,7 +754,8 @@ getMIRENsites <- function(target_road  # road/trail
     
     perp_plots_bothsides_filtered <- perp_plots_bothsides_sf %>% 
       ### ~ no steep areas within perpendicular plot ----
-    filter_perpendicular_plots(checkTerrain = check_steep_terrain,
+    filter_perpendicular_plots(plot_length_pp = plot_length,
+                               checkTerrain = check_steep_terrain,
                                terrain_rast = road_dem_slopemask,
                                conservative = FALSE,
                                ### ~ perpendicular plot not overlapping with road line (in road turns) ----
@@ -767,6 +766,8 @@ getMIRENsites <- function(target_road  # road/trail
                                checkWater = check_water_overlap,
                                ### ~ plot not overlapping with infrastructure ----
                                checkInfrastructure = check_infrastructure_overlap) %>% 
+      # if re-running filtering loop, add previous version with other sites
+      {if(add_elev_dist != 0) dplyr::bind_rows(., perp_plots_bothsides_filtered) else .} %>% 
       dplyr::arrange(plot_id)
     
     #   
@@ -796,7 +797,8 @@ getMIRENsites <- function(target_road  # road/trail
                     dist_to_first = as.numeric(dist_to_first)) %>% 
       tidylog::filter(dist_to_first <= 1000) %>% 
       dplyr::select(-dplyr::starts_with("centroid"),
-                    -dist_to_first)
+                    -dist_to_first) %>% 
+      dplyr::arrange(plot_id)
     
     ### ~ pick plot closest to ideal elevation if several remain within a group ----
     perp_plots_bothsides_selection <- perp_plots_bothsides_disparate %>% 
@@ -807,10 +809,7 @@ getMIRENsites <- function(target_road  # road/trail
       dplyr::slice_min(order_by = elevation_diff_abs,
                        by = c(plot_id, side),
                        n = 1,
-                       with_ties = FALSE) %>% 
-      # if re-running filtering loop, add previous version with other sites
-      {if(add_elev_dist != 0) dplyr::bind_rows(., perp_plots_bothsides_selection) else .} %>% 
-      dplyr::arrange(plot_id)
+                       with_ties = FALSE)
     
     ### ~ check if all groups have left and right available ----
     
@@ -824,6 +823,8 @@ getMIRENsites <- function(target_road  # road/trail
       
     } else break  # if no sites missing, break loop
     
+    # check whether maximum possible elevation addition, i.e. last run of loop, has been reached
+    max_elev_dist_reached <- add_elev_dist == elev_dist_thresh_steps[length(elev_dist_thresh_steps)]  
     if(max_elev_dist_reached) {
       # create substitute df with empty rows 
       sites_missing_df <- tibble::tibble(plot_id = rep(sites_missing, each = 2),
@@ -834,6 +835,7 @@ getMIRENsites <- function(target_road  # road/trail
       message(paste0(stringr::str_to_title(target_road), ": even after expanding elevation window and re-applying spatial filters, no plot candidates available at site(s) ", paste(sites_missing, collapse = ", "), "."))
     }
     
+  ## ~~ close re-iteration loop ----
   }  # close loop for adding to elev dist threshold
   
   
@@ -850,12 +852,12 @@ getMIRENsites <- function(target_road  # road/trail
   ## check left-side plots, print warning
   sites_wo_left <- sites_lr_available %>% dplyr::filter(!left) %>% dplyr::pull(plot_id)
   if(length(sites_wo_left) > 0) 
-    warning(paste0("After applying spatial filters, no available LEFT-side plots remaining at site(s) ", paste(sort(sites_wo_left), collapse = ", "), "."))
+    message(paste0("After applying spatial filters, no available LEFT-side plots remaining at site(s) ", paste(sort(sites_wo_left), collapse = ", "), "."))
   
   ## check right-side plots, print warning
   sites_wo_right <- sites_lr_available %>% dplyr::filter(!right) %>% dplyr::pull(plot_id)
   if(length(sites_wo_right) > 0) 
-    warning(paste0("After applying spatial filters, no available RIGHT-side plots remaining at site(s) ", paste(sort(sites_wo_right), collapse = ", "), "."))
+    message(paste0("After applying spatial filters, no available RIGHT-side plots remaining at site(s) ", paste(sort(sites_wo_right), collapse = ", "), "."))
   
   ### ~ determine left-right sequence ----
   
@@ -868,6 +870,7 @@ getMIRENsites <- function(target_road  # road/trail
     # set order of sides, select final plots
     target_sites_selection <- order_select_sites(start_side = start_side,
                                                  all_sites_lr = sites_lr_available,
+                                                 times_lr = ceiling(n_sites/2),
                                                  candidate_plot_selection = perp_plots_bothsides_selection)
     
   } else {
@@ -894,6 +897,7 @@ getMIRENsites <- function(target_road  # road/trail
     
     target_sites_selection <- order_select_sites(start_side = start_side,
                                                  all_sites_lr = sites_lr_available,
+                                                 times_lr = ceiling(n_sites/2),
                                                  candidate_plot_selection = perp_plots_bothsides_selection)
   }
   
