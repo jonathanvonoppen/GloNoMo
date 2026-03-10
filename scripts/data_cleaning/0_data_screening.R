@@ -16,6 +16,7 @@ source(file.path("P:", "common", "scripts", "EcologyGroup_functions_library.R"))
 
 data_dir <- file.path("data")
 miren_data_dir <- file.path(data_dir, "external", "MIREN")
+gloria_data_dir <- file.path(data_dir, "external", "GLORIA")
 
 
 # [1] Load data ----
@@ -33,7 +34,7 @@ miren_road_species <- readr::read_csv(file.path(miren_data_dir, "MIREN_road_surv
 
 ### >> trails ----
 miren_trail_plot_metadata <- readxl::read_xlsx(file.path(miren_data_dir, "MIREN_trail_data_final.xlsx")
-                                  , na = c("", "NA"))
+                                               , na = c("", "NA"))
 
     # n unique regions
     miren_trail_plot_metadata %>% pull(Region) %>% unique() %>% length()  #> 10
@@ -43,8 +44,6 @@ miren_trail_plot_metadata <- readxl::read_xlsx(file.path(miren_data_dir, "MIREN_
 
 
 ## GLORIA ----
-
-gloria_data_dir <- file.path(data_dir, "external", "GLORIA")
 
 # plot metadata
 gloria_plot_metadata <- readr::read_delim(file.path(gloria_data_dir, "fld_plot.txt"))
