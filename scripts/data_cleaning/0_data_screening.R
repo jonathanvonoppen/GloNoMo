@@ -1,9 +1,9 @@
 # GloNoMo - Global status, trends, drivers and impacts of non-native plant species in mountain ecosystems
 
-# Data exploration script
+# Data exploration 
 
 # script by Jonathan von Oppen  //  jonathan.vonoppen@unibas.ch
-# last updated 13 Mar 2026
+# last updated 10 Mar 2026
 
 
 # [0] Dependencies ----
