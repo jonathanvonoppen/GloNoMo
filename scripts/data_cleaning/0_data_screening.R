@@ -21,6 +21,23 @@ gloria_data_dir <- file.path(data_dir, "external", "GLORIA")
 
 # [1] Load data ----
 
+## GMBA (mountain area reference) ----
+gmba_shp <- file.path("P:", "common", "data", "GISData", "ecological_boundaries", "mountain_areas", "GMBA", "gmba_mountains.shp")
+if(!file.exists(gmba_shp)){
+  gmbaR::gmba_read()
+  mountains_geom <- gmba_inv()
+  sf::st_write(mountains_geom
+               , dsn = gmba_shp)
+} else {
+  mountains_geom <- sf::st_read(gmba_shp)
+}
+
+mountain_areas <- mountains_geom %>% 
+  dplyr::filter(Hier_Lvl == 1) %>% 
+  sf::st_make_valid() %>% 
+  sf::st_union() %>% 
+  terra::vect()
+
 ## MIREN ----
 
 ### >> roads ----
@@ -89,3 +106,19 @@ read_gloria_file <- function(file) {
                                       encoding = "latin1"
                     ))
 }
+
+
+## ITEX+ ----
+
+itex_metadata <- readr::read_csv("P:/projects/GloNoMo/data/external/ITEX+/ITEX_v1_harmonized_2026-10-07/metadata_filtered.csv")
+
+itex_metadata_locations <- itex_metadata %>% 
+  tidylog::filter(!is.na(LONG) | !is.na(LAT)) %>% 
+  sf::st_as_sf(coords = c("LONG", "LAT")
+               , crs = sf::st_crs("epsg:4326"))
+
+# check whether includes mountain areas
+itex_mountains <- itex_metadata_locations %>% 
+  sf::st_filter(sf::st_as_sf(mountain_areas))
+
+nrow(itex_mountains) #> 161 datasets within mountain regions
